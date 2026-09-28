@@ -1,0 +1,27 @@
+#prisma 4.0
+def package "luce-fbx" {
+    str owner = "dymokomi"
+    str version = "0.1.0"
+    str kind = "package"
+    str language = "luce-base"
+    str readme = "README.md"
+    str description = "Bounded static FBX polygon geometry reader in Luce Base."
+    def export "fbx" {
+        str module = "luce_fbx.fbx"
+    }
+    def dependency "luce-3d" {
+        str owner = "dymokomi"
+        str version = "^0.1.5"
+        str path = "../luce-3d"
+    }
+    def dependency "luce-compress" {
+        str owner = "dymokomi"
+        str version = "^0.2.3"
+        str path = "../luce-compress"
+    }
+    def dependency "luce-std" {
+        str owner = "dymokomi"
+        str version = "^0.1.0"
+        str path = "../luce-std"
+    }
+}
