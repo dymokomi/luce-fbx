@@ -18,6 +18,7 @@ Reads at most 32 MiB and enforces modeling mesh limits. Binary offsets, parent
 bounds, array lengths/encodings and polygon indices are checked. ASCII 6.x legacy
 arrays are not supported. No texture or referenced file is opened automatically.
 
-Tests in `luced-3d/tests/import_tests.luc` include a pinned real Blender binary
-FBX fixture and generated compressed/uncompressed 7.4/7.5 variants, corruption
-and truncation. All runtime code is Base; donor C code remains outside the package.
+`./test.sh` runs the Luce regressions in `tests/` native and through the C
+backend: a pinned real Blender binary FBX fixture, generated
+compressed/uncompressed 7.4/7.5 variants, corruption and truncation. CI pins the
+compilers and sibling packages in `bootstrap/PACKAGES`. All runtime code is Base; donor C code remains outside the package.

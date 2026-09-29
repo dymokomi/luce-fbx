@@ -1,0 +1,6 @@
+# luce-fbx's Luce regressions.
+from fbx_tests import fbx_tests
+
+pub func main(arguments: list[str]) -> int!:
+    fbx_tests()
+    return 0
