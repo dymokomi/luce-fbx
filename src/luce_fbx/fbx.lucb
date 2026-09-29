@@ -6,7 +6,7 @@ import strings
 import interop
 import memory
 import compress
-from three import PolygonMesh, MeshBuilder, Vector3, invalid
+from geocore import PolygonMesh, MeshBuilder, Vector3, invalid
 
 pub struct Fbx:
     let reserved: u8 = 0
