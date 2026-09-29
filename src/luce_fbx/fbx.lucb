@@ -6,12 +6,12 @@ import strings
 import interop
 import memory
 import compress
-from geocore import PolygonMesh, MeshBuilder, Vector3, invalid
+from geocore import Mesh, MeshBuilder, Vector3, invalid
 
 pub struct Fbx:
     let reserved: u8 = 0
     ## Read bounded ASCII or binary FBX 7.x mesh-local positions and polygons.
-    pub static func load(path: str) -> interop.Reference[PolygonMesh]!:
+    pub static func load(path: str) -> interop.Reference[Mesh]!:
         if path.length == 0:
             error(invalid, "FBX path is empty")
         for byte in path.bytes:
@@ -26,7 +26,7 @@ pub struct Fbx:
         return try Fbx.decode_ascii((str)data)
 
     ## Decode FBX 7.x ASCII arrays; scene transforms and attributes are not applied.
-    pub static func decode_ascii(text: str) -> interop.Reference[PolygonMesh]!:
+    pub static func decode_ascii(text: str) -> interop.Reference[Mesh]!:
         if text.length > 33554432:
             error(invalid, "FBX input exceeds 32 MiB")
         var mesh = try MeshBuilder()
@@ -174,7 +174,7 @@ func array(data: const u8[], at: usize, expected: u8, stride: usize) -> u8[]!:
         error(invalid, "unsupported binary FBX array encoding")
     return result
 
-func binary(data: const u8[]) -> interop.Reference[PolygonMesh]!:
+func binary(data: const u8[]) -> interop.Reference[Mesh]!:
     let version = try uint(data, 23, 4)
     if version < 7000 or version > 7700:
         error(invalid, "supported binary FBX versions are 7.x")

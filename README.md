@@ -1,7 +1,7 @@
 # luce-fbx
 
 An original **Luce Base** static polygon geometry reader. Public export:
-`fbx.Fbx.load(path)` and `fbx.Fbx.decode_ascii(text)` return `geocore.PolygonMesh`.
+`fbx.Fbx.load(path)` and `fbx.Fbx.decode_ascii(text)` return `geocore.geocore Mesh`.
 
 The current contract is **raw mesh-local geometry**, not a reconstructed FBX
 scene. It reads positions and polygons from ASCII 7.x arrays and binary 7.x nodes,
