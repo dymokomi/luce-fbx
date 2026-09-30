@@ -21,9 +21,9 @@ component per family, so uses are merged, as luce-usd merges prims:
 - **Keep hierarchy**: every model's mesh is an instance row placing its own
   prototype (shared ones shared when Instancing is on).
 
-A row is a translation, an XYZ rotation and a scale. A model whose matrix
-shears (non-uniform scale under rotation) cannot be a row; its mesh is merged
-instead. Nulls, bones, cameras and lights have no geometry here.
+A row is a translation, an XYZ rotation and a scale, and its model's path
+is the row attribute `path`. A model whose matrix shears (non-uniform scale
+under rotation) cannot be a row; its mesh is merged instead. Nulls, bones, cameras and lights have no geometry here.
 
 A mirroring matrix (negative determinant) reverses each face's corners after
 the first. Faces of fewer than 3 corners are dropped, with a warning; faces of
@@ -162,8 +162,12 @@ into one stream per array; `deflate = false` stores them raw.
   XYZ order, degrees) and Lcl Scaling, and Visibility 0 when hidden: the
   prototype's one mesh model itself when it has nothing else (sharing its
   Geometry, FBX's own instancing), else a Null holding the prototype's
-  models. Rows are named after their prototype's path (FBX needs a name;
-  the set has none per row).
+  models. A row with a `path` row attribute is that model, under its
+  ancestors' models (Nulls, or rows placed earlier, relative to which it is
+  then placed); rows are placed before geometry, and geometry under a
+  placed row takes the row's inverse placement (when that is not a
+  translation, rotation and scale, it goes under the root by its last
+  name). A row without a path is named after its prototype's.
 - **Curves.** A path's poly curves share one Line (a cyclic curve closes on
   its first point). Every other curve is a NurbsCurve: NURBS keep their
   order, knots and weights (cyclic ones Periodic, their knots with the
@@ -182,6 +186,8 @@ lights and material properties.
 Every file of the corpus that loads (765 of 786) saves and reads back the
 same in ufbx and in luce-fbx: faces, corners, position sums, normals, UV
 and color sets and materials per path, at 7400 and 7500; with instances or
-Keep hierarchy, the same faces and positions overall. Blender 5.1 imports
+Keep hierarchy, the same faces and positions overall, and the same model
+paths in all but 2 (instances) and 6 (Keep hierarchy) files: sheared
+models under placed rows, and duplicate ids. Blender 5.1 imports
 755 of them the same (faces, corners, positions); the other 10 are
 synthetic files with NaN points or degenerate faces Blender drops.

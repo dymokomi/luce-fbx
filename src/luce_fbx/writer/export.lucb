@@ -38,6 +38,8 @@ struct ModelOut:
     var visible: bool
     ## Found by (parent, name); instance rows are not.
     var named: bool
+    ## Its placement in the scene (its parent's times its own).
+    var world: Matrix4
 
 ## A mesh part or a path's curves written as Geometry, to connect to the
 ## model at `path` (a set's own text; empty: the component's fallback).
@@ -163,8 +165,28 @@ pub struct Export:
     mutating func add_model(parent: i32, name: str, kind: u8) -> usize!:
         let start = self.names.count
         for byte in name.bytes: try self.names.push(byte)
-        try self.models.push(ModelOut(id = self.new_id(), parent = parent, name_start = start, name_length = name.length, kind = kind, translation = Vector3(), rotation = Vector3(), scale = Vector3(1.0, 1.0, 1.0), visible = true, named = false))
+        try self.models.push(ModelOut(id = self.new_id(), parent = parent, name_start = start, name_length = name.length, kind = kind, translation = Vector3(), rotation = Vector3(), scale = Vector3(1.0, 1.0, 1.0), visible = true, named = false, world = self.world_of(parent)))
         return self.models.count - 1
+
+    ## The placement of model `index` (-1: the scene root, identity).
+    func world_of(index: i32) -> Matrix4:
+        return Matrix4() if index < 0 else self.models.items[(usize)index].world
+
+    ## The model named `name` under `parent`, if there is one.
+    mutating func find_named(parent: i32, name: str) -> usize?!:
+        if self.lookup.count < self.models.count * 2 + 16: try self.rehash()
+        let mask = self.lookup.count - 1
+        var slot = name_hash(parent, name) & mask
+        while self.lookup.items[slot] >= 0:
+            let found = (usize)self.lookup.items[slot]
+            if self.models.items[found].parent == parent and self.model_name(found) == name: return found
+            slot = (slot + 1) & mask
+        return none
+
+    ## Make model `index` found by its parent and name from now on.
+    mutating func name_model(index: usize) -> !:
+        self.models.items[index].named = true
+        try self.rehash()
 
     mutating func rehash() -> !:
         var size: usize = 64

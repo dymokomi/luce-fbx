@@ -20,18 +20,54 @@ func prepare(job: Export*, set: const GeometrySet*) -> usize!:
     try job.prepared.push(Prepared(set = set, first_attach = first, attach_count = job.attaches.count - first, instances = instances))
     return job.prepared.count - 1
 
-## Place prepared set `index` under model `parent` (-1: the scene root).
+## Place prepared set `index` under model `parent` (-1: the scene root):
+## its instance rows first, so rows own their paths' models, then its
+## geometry, whose points are in `parent`'s space.
 func place(job: Export*, index: usize, parent: i32, depth: usize) -> !:
     let entry = job.prepared.items[index]
+    if let instances = entry.instances: try place_rows(job, instances, parent, depth)
     var path = Growing[u8]()
     defer path.close()
     for at in entry.first_attach..<entry.first_attach + entry.attach_count:
         let attach = job.attaches.items[at]
         # A copy: naming models grows the text the path is in.
         try path.assign(job.names.items[attach.path_start..<attach.path_start + attach.path_length])
-        let model = try job.model_at(parent, (str)path.view(), attach.fallback)
+        let model = try attach_model(job, parent, (str)path.view(), attach.fallback)
         try connect(job, model, &attach)
-    if let instances = entry.instances: try place_rows(job, instances, parent, depth)
+
+## The model geometry at `path` under `parent` goes to. Its points are in
+## `parent`'s space, so a model whose ancestors include placed rows takes
+## their placement's inverse as its own; when that is not a translation,
+## rotation and scale (a sheared inverse), the model goes under `parent`
+## by its last name instead.
+func attach_model(job: Export*, parent: i32, path: str, fallback: str) -> usize!:
+    var end = path.length
+    while end > 0 and path.bytes[end - 1] == '/': end -= 1
+    while end > 0 and path.bytes[end - 1] != '/': end -= 1
+    let ancestors = (str)path.bytes[..<end]
+    let name = leaf_name(path, fallback)
+    let holder: i32 = (i32)try job.model_at(parent, ancestors, "") if leaf_name(ancestors, "").length > 0 else parent
+    let wanted = job.world_of(parent)
+    let base = job.world_of(holder)
+    if same_matrix(&base, &wanted): return try job.child_model(holder, name)
+    let undo = base.inverse().multiply(wanted) catch failure:
+        discard(failure)
+        recover Matrix4()
+    let own = placement_of(&undo) else return try job.child_model(parent, name)
+    # A model of its own, placed by the inverse (a row's or Null's name kept
+    # when free).
+    let taken = try job.find_named(holder, name)
+    let model = try job.add_model(holder, name, 0)
+    if taken == none: try job.name_model(model)
+    let placed = &job.models.items[model]
+    placed.translation = own.translation
+    placed.rotation = fbx_euler(own.rotation)
+    placed.scale = own.scale
+    placed.world = wanted
+    return model
+
+func same_matrix(a: const Matrix4*, b: const Matrix4*) -> bool:
+    return a.x == b.x and a.y == b.y and a.z == b.z and a.translation == b.translation
 
 ## Connect an attachment's geometry and materials to model `model`.
 func connect(job: Export*, model: usize, attach: const Attach*) -> !:
@@ -43,7 +79,10 @@ func connect(job: Export*, model: usize, attach: const Attach*) -> !:
         try job.link(job.material_refs.items[at], id)
 
 ## Each instance row as a model placing its prototype: the prototype's one
-## mesh itself when it has nothing else, else a Null holding it.
+## mesh itself when it has nothing else, else a Null holding it. A row with
+## a `path` row attribute is that model, under its ancestors' models: Nulls,
+## or rows placed earlier (it is then placed relative to them, when that
+## is a translation, rotation and scale; else under `parent`).
 func place_rows(job: Export*, instances: const Instances*, parent: i32, depth: usize) -> !:
     if depth >= most_depth:
         try job.warnings.add("Instances nested more than 16 deep were left out")
@@ -56,16 +95,40 @@ func place_rows(job: Export*, instances: const Instances*, parent: i32, depth: u
         let entry = job.prepared.items[prototype]
         let single = entry.attach_count == 1 and entry.instances == none and job.attaches.items[entry.first_attach].kind == 1
         name.clear()
-        if single:
+        var holder = parent
+        let row_matrix = Matrix4.compose(r.translation, r.rotation, r.scale)
+        var own = Placement(r.translation, r.rotation, r.scale, row_matrix)
+        var findable = false
+        let row_path = instances.row_text("path", row)
+        if leaf_name(row_path, "").length > 0:
+            # Its ancestors' models, then itself by its own name.
+            var end = row_path.length
+            while end > 0 and row_path.bytes[end - 1] == '/': end -= 1
+            while end > 0 and row_path.bytes[end - 1] != '/': end -= 1
+            let ancestors = (str)row_path.bytes[..<end]
+            if leaf_name(ancestors, "").length > 0: holder = (i32)try job.model_at(parent, ancestors, "")
+            if holder != parent:
+                # Relative to the ancestor: its placement undone.
+                let wanted = job.world_of(parent).multiply(row_matrix)
+                let relative = job.world_of(holder).inverse().multiply(wanted) catch failure:
+                    discard(failure)
+                    recover row_matrix
+                if let placed = placement_of(&relative): own = placed
+                else: holder = parent
+            try name.assign(leaf_name(row_path, "").bytes)
+            findable = (try job.find_named(holder, (str)name.view())) == none
+        elif single:
             let attach = job.attaches.items[entry.first_attach]
             try name.assign(leaf_name((str)job.names.items[attach.path_start..<attach.path_start + attach.path_length], "instance").bytes)
         else: try name.assign("instance".bytes)
-        let model = try job.add_model(parent, (str)name.view(), 0)
+        let model = try job.add_model(holder, (str)name.view(), 0)
         let target = &job.models.items[model]
-        target.translation = r.translation
-        target.rotation = fbx_euler(r.rotation)
-        target.scale = r.scale
+        target.translation = own.translation
+        target.rotation = fbx_euler(own.rotation)
+        target.scale = own.scale
         target.visible = r.visible
+        target.world = job.world_of(holder).multiply(own.matrix)
+        if findable: try job.name_model(model)
         if single:
             let attach = job.attaches.items[entry.first_attach]
             try connect(job, model, &attach)

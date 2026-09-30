@@ -1,7 +1,7 @@
 #prisma 4.0
 def package "luce-fbx" {
     str owner = "dymokomi"
-    str version = "0.7.1"
+    str version = "0.7.2"
     str kind = "package"
     str language = "luce-base"
     str readme = "README.md"
@@ -14,7 +14,7 @@ def package "luce-fbx" {
     }
     def dependency "luce-geocore" {
         str owner = "dymokomi"
-        str version = "^0.2.3"
+        str version = "^0.2.4"
         str path = "../luce-geocore"
     }
     def dependency "luce-compress" {

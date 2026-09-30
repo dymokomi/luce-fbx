@@ -211,13 +211,16 @@ func finish_mesh(build: MeshBuild*, gathered: const Gathered*, options: const Im
     try put_face_texts(mesh, build, gathered)
     return mesh
 
-## The instances component of every instanced use, or none.
+## The instances component of every instanced use, or none; each row's
+## model path is its `path` row attribute.
 func instance_rows(gathered: const Gathered*, options: const ImportOptions*, warnings: Warnings*) -> Instances*?!:
     var any = false
     for use in gathered.uses.view(): any = any or use.instanced
     if not any: return none
     let instances = try new_instances()
     errdefer close_instances(instances)
+    var row_paths = Growing[i32]()
+    defer row_paths.close()
     var made: usize = 0
     for use in gathered.uses.view():
         if not use.instanced: continue
@@ -240,6 +243,10 @@ func instance_rows(gathered: const Gathered*, options: const ImportOptions*, war
             made += 1
         let placement = placement_of(&use.matrix) else continue
         try instances.add_instance(use.prototype, &placement, true)
+        try row_paths.push(use.path)
+    var column = try gathered.paths.finish()
+    defer column.release()
+    try instances.put_attribute(try Attribute.text("path", Domain.point, row_paths.count, column, row_paths.view()))
     return instances
 
 func close_instances(instances: Instances*):

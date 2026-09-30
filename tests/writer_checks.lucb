@@ -159,9 +159,38 @@ pub func instances() -> !:
         let y = b.item(row).matrix()
         for pair in [(x.x, y.x), (x.y, y.y), (x.z, y.z), (x.translation, y.translation)]:
             assert(pair.0.subtract(pair.1).length() < 1.0e-5)
+        # Each row keeps its model's path.
+        assert(a.row_text("path", row) != "" and a.row_text("path", row) == b.row_text("path", row))
     let merged = try read_set(data, ImportOptions(instancing = false))
     defer dispose_set(merged)
     assert((try mesh_of(merged)).face_count() == 4000)
+
+## Meshes nested three deep, kept as they are (Keep hierarchy): every row
+## comes back at its model path, under the rows of its ancestors, where it
+## was. (A shearing model, merged rather than a row, keeps its place but
+## may lose its ancestors' names.)
+pub func hierarchy() -> !:
+    let options = ImportOptions(keep_hierarchy = true, instancing = false)
+    let (set, data) = try saved("tests/fixtures/blender_279_nested_meshes_7400_binary.fbx", options, ExportOptions())
+    defer dispose_set(set)
+    defer free(data) in memory.heap
+    let again = try read_set(data, options)
+    defer dispose_set(again)
+    let a = (const Instances*)(set_find(set, instances_component()) else error(invalid, "no instances"))
+    let b = (const Instances*)(set_find(again, instances_component()) else error(invalid, "no instances"))
+    assert(a.count() > 1 and b.count() >= a.count())
+    for row in 0..<a.count():
+        var found = false
+        for other in 0..<b.count():
+            if b.row_text("path", other) != a.row_text("path", row): continue
+            found = true
+            let x = a.item(row).matrix()
+            let y = b.item(other).matrix()
+            for pair in [(x.x, y.x), (x.y, y.y), (x.z, y.z), (x.translation, y.translation)]:
+                if pair.0.subtract(pair.1).length() >= 1.0e-4 * (1.0 + pair.0.length()): print(f"writer: row {a.row_text("path", row)} moved")
+                assert(pair.0.subtract(pair.1).length() < 1.0e-4 * (1.0 + pair.0.length()))
+        if not found: print(f"writer: row {a.row_text("path", row)} lost its path")
+        assert(found)
 
 ## 7500 records and raw arrays read as 7400 and deflated ones do.
 pub func encodings() -> !:
@@ -182,4 +211,5 @@ pub func all() -> !:
     try layers()
     try curves()
     try instances()
+    try hierarchy()
     try encodings()

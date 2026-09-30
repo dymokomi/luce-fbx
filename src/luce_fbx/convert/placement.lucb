@@ -88,7 +88,7 @@ func place_chunk(context: void*?, index: usize):
         out[point] = Float3((f32)(x * m.x.x + y * m.y.x + z * m.z.x + t.x), (f32)(x * m.x.y + y * m.y.y + z * m.z.y + t.y), (f32)(x * m.x.z + y * m.y.z + z * m.z.z + t.z))
 
 ## `matrix` as an instance row, or none when it shears.
-func placement_of(matrix: const Matrix4*) -> Placement?:
+pub func placement_of(matrix: const Matrix4*) -> Placement?:
     var columns: Vector3[3] = [matrix.x, matrix.y, matrix.z]
     var scale: f64[3] = [columns[0].length(), columns[1].length(), columns[2].length()]
     if matrix.determinant() < 0.0: scale[0] = -scale[0]
