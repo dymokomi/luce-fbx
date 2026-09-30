@@ -3,12 +3,12 @@
 ## `attr`, `mat`, `curve`; numbers as %.6g). A local parity script compares
 ## the two over a corpus of FBX files. Fields are separated by tabs.
 ##
-##     fbxdump FILE [--time SECONDS] [--rest] [--save OUT [--instances] [--keep] [--7500]]
+##     fbxdump FILE [--time SECONDS] [--rest] [--save OUT [--instances] [--keep] [--7500] [--raw]]
 ##
 ## --time evaluates animation at a time; --rest leaves blend shapes and
 ## skins out. --save also writes what it imported (merged; with shared
 ## meshes as instances, or every model's own with --keep) to OUT with the
-## writer, at 7400 or 7500.
+## writer, at 7400 or 7500, its arrays deflated or (--raw) not.
 import c
 import memory
 import geocore_parallel as pool
@@ -40,6 +40,7 @@ pub func main(arguments: str[]) -> i32!:
     var keep = false
     var instances = false
     var version: u32 = 0
+    var deflate = true
     for at in 2..<arguments.length:
         if arguments[at] == "--time" and at + 1 < arguments.length: time = try strings.parse_f64(arguments[at + 1])
         if arguments[at] == "--rest": rest = true
@@ -47,6 +48,7 @@ pub func main(arguments: str[]) -> i32!:
         if arguments[at] == "--keep": keep = true
         if arguments[at] == "--instances": instances = true
         if arguments[at] == "--7500": version = 7500
+        if arguments[at] == "--raw": deflate = false
     var animation = scene.animation() catch failure:
         print(f"error {failure.message}")
         return 1
@@ -86,7 +88,7 @@ pub func main(arguments: str[]) -> i32!:
         defer dispose_set(shared)
         var notes = Warnings()
         defer notes.close()
-        let export_options = ExportOptions(version = version, deflate = true)
+        let export_options = ExportOptions(version = version, deflate = deflate)
         let bytes = encode_set(shared, &export_options, &notes) catch failure:
             print(f"error save {failure.message}")
             return 1

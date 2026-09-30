@@ -10,8 +10,9 @@
 ##   FileId/CreationTime pair and footer id, padding to 16, the version,
 ##   120 zero bytes and the closing magic).
 ##
-## Arrays over 128 bytes are deflated first, one pool task per array (zlib,
-## encoding 1); smaller ones are stored raw (encoding 0), as Blender does.
+## Arrays over 128 bytes are deflated first (zlib, encoding 1), in
+## independent 512 KiB pieces on the pool joined into one stream; smaller
+## ones are stored raw (encoding 0), as Blender does.
 
 let magic: u8[23] = [0x4b, 0x61, 0x79, 0x64, 0x61, 0x72, 0x61, 0x20, 0x46, 0x42, 0x58, 0x20, 0x42, 0x69, 0x6e, 0x61, 0x72, 0x79, 0x20, 0x20, 0x00, 0x1a, 0x00]
 pub let file_id: u8[16] = [0x28, 0xb3, 0x2a, 0xeb, 0xb6, 0x24, 0xcc, 0xc2, 0xbf, 0xc8, 0xb0, 0x2a, 0xa9, 0x2b, 0xfc, 0xf1]
@@ -21,6 +22,9 @@ let foot_magic: u8[16] = [0xf8, 0x5a, 0x8c, 0x6a, 0xde, 0xf5, 0xd9, 0x7e, 0xec, 
 
 ## Arrays of more bytes than this are deflated.
 let pack_above: usize = 128
+## Deflated in independent pieces of this many bytes, one pool task each,
+## joined into one zlib stream (as pigz does).
+let segment_bytes: usize = 524288
 
 ## What an encode does.
 struct Encoding:
@@ -29,28 +33,88 @@ struct Encoding:
     var version: u32
     var deflate: bool
 
+## One piece of an array being deflated: its bytes, where they go, and
+## their Adler-32.
+struct Segment:
+    var blob: usize
+    var start: usize
+    var end: usize
+    var out: u8[]
+    var used: usize
+    var adler: u32
+    var failed: bool
+
 struct PackWork:
     var blobs: Blob[]
+    var segments: Segment[]
 
-## Deflate blob `index` when it is large enough.
-func pack_blob(context: void*?, index: usize):
+## Deflate one segment (flate level 1), the last of its array ending the
+## stream.
+func pack_segment(context: void*?, index: usize):
     let work = (PackWork*)(context else return)
-    let blob = &work.blobs[index]
-    if blob.raw.length <= pack_above: return
-    blob.packed = compress.compress(blob.raw) catch failure:
+    let segment = &work.segments[index]
+    let raw = work.blobs[segment.blob].raw[segment.start..<segment.end]
+    segment.out = alloc u8[flate.deflate_bound(raw.length)] in memory.heap catch failure:
         discard(failure)
-        blob.failed = true
+        segment.failed = true
         recover empty_bytes()
+    if segment.failed: return
+    segment.used = flate.deflate_raw(raw, 1, segment.out, segment.end == work.blobs[segment.blob].raw.length) catch failure:
+        discard(failure)
+        segment.failed = true
+        recover 0
+    segment.adler = flate.adler32(raw)
 
-## The bytes of `tree` as an FBX file on memory.heap; the caller frees them.
+## Deflate every array over `pack_above` bytes into its zlib stream.
+func pack_blobs(tree: Tree*) -> !:
+    var segments = Growing[Segment]()
+    defer:
+        for segment in segments.view():
+            if segment.out.length > 0: free(segment.out) in memory.heap
+        segments.close()
+    for index in 0..<tree.blobs.count:
+        let length = tree.blobs.items[index].raw.length
+        if length <= pack_above: continue
+        var start: usize = 0
+        while start < length:
+            let end = start + segment_bytes if length - start > segment_bytes else length
+            try segments.push(Segment(blob = index, start = start, end = end, out = empty_bytes(), used = 0, adler = 1, failed = false))
+            start = end
+    var work = PackWork(blobs = tree.blobs.items[..<tree.blobs.count], segments = segments.items[..<segments.count])
+    pool.run(segments.count, pack_segment, (void*)&work)
+    for segment in segments.view():
+        if segment.failed: error(memory.exhausted, "out of memory deflating an FBX array")
+    # Each array's pieces joined: header, segments, the combined Adler-32.
+    var at: usize = 0
+    while at < segments.count:
+        let blob = &tree.blobs.items[segments.items[at].blob]
+        var end = at
+        var total: usize = 6
+        while end < segments.count and segments.items[end].blob == segments.items[at].blob:
+            total += segments.items[end].used
+            end += 1
+        blob.packed = try alloc u8[total] in memory.heap
+        let header = flate.zlib_header(1)
+        blob.packed[0] = header[0]
+        blob.packed[1] = header[1]
+        var used: usize = 2
+        var adler: u32 = 1
+        for k in at..<end:
+            let segment = &segments.items[k]
+            memory.copy(blob.packed[used..], segment.out[..<segment.used], segment.used)
+            used += segment.used
+            adler = segment.adler if k == at else flate.adler32_combine(adler, segment.adler, segment.end - segment.start)
+        blob.packed[used] = (u8)(adler >> 24)
+        blob.packed[used + 1] = (u8)(adler >> 16)
+        blob.packed[used + 2] = (u8)(adler >> 8)
+        blob.packed[used + 3] = (u8)adler
+        blob.packed_length = used + 4
+        at = end
+
 ## `version_prop` is the header's FBXVersion property, set to the version
 ## written.
 func encode_tree(tree: Tree*, requested: u32, deflate: bool, version_prop: usize) -> u8[]!:
-    if deflate and tree.blobs.count > 0:
-        var work = PackWork(blobs = tree.blobs.items[..<tree.blobs.count])
-        pool.run(tree.blobs.count, pack_blob, (void*)&work)
-        for blob in tree.blobs.view():
-            if blob.failed: error(memory.exhausted, "out of memory compressing an FBX array")
+    if deflate: try pack_blobs(tree)
     var version = requested
     var sizes = try alloc u64[tree.nodes.count] in memory.heap
     defer free(sizes) in memory.heap
@@ -63,10 +127,14 @@ func encode_tree(tree: Tree*, requested: u32, deflate: bool, version_prop: usize
     tree.props.items[version_prop].bits = (u64)version
     let data = try alloc u8[(usize)total] in memory.heap
     errdefer free(data) in memory.heap
-    var out = Output(data = data, at = 0, wide = version >= 7500)
+    var out = Output(data = data, at = 0, wide = version >= 7500, copies = Growing[Copy]())
+    defer out.copies.close()
     for byte in magic: out.put8(byte)
     out.put32(version)
-    for root in tree.roots.view(): write_node(tree, sizes, root, &out)
+    for root in tree.roots.view(): try write_node(tree, sizes, root, &out)
+    # The arrays' bytes, copied in parallel into the places left for them.
+    var copying = CopyWork(tree = tree, data = data, copies = out.copies.view())
+    pool.run(out.copies.count, copy_array, (void*)&copying)
     out.zeros(header_bytes(out.wide))
     for byte in foot_id: out.put8(byte)
     out.zeros(4)
@@ -97,7 +165,7 @@ func prop_bytes(tree: const Tree*, prop: const WProp*) -> u64:
         'S', 'R': return 5 + (u64)prop.length
         _:
             let blob = &tree.blobs.items[prop.start]
-            return 13 + (u64)(blob.packed.length if blob.packed.length > 0 else blob.raw.length)
+            return 13 + (u64)(blob.packed_length if blob.packed_length > 0 else blob.raw.length)
 
 func props_bytes(tree: const Tree*, node: const WNode*) -> u64:
     var total: u64 = 0
@@ -135,6 +203,8 @@ struct Output:
     var data: u8[]
     var at: u64
     var wide: bool
+    ## Array bytes still to copy: where, from which blob, and which piece.
+    var copies: Growing[Copy]
 
     mutating func put8(value: u8):
         self.data[(usize)self.at] = value
@@ -162,7 +232,7 @@ struct Output:
         self.at += (u64)count
 
 ## Node `index` and its subtree.
-func write_node(tree: const Tree*, sizes: const u64[], index: u32, out: Output*):
+func write_node(tree: const Tree*, sizes: const u64[], index: u32, out: Output*) -> !:
     let node = &tree.nodes.items[(usize)index]
     let end = out.at + sizes[(usize)index]
     out.number(end)
@@ -171,14 +241,14 @@ func write_node(tree: const Tree*, sizes: const u64[], index: u32, out: Output*)
     out.put8((u8)node.name_length)
     out.bytes(tree.text.items[(usize)node.name_start..<(usize)(node.name_start + node.name_length)])
     for at in node.first_prop..<node.first_prop + node.prop_count:
-        write_prop(tree, &tree.props.items[(usize)at], out)
+        try write_prop(tree, &tree.props.items[(usize)at], out)
     var child = index + 1
     while child < node.end:
-        write_node(tree, sizes, child, out)
+        try write_node(tree, sizes, child, out)
         child = tree.nodes.items[(usize)child].end
     if closes_with_null(node, index): out.zeros(header_bytes(out.wide))
 
-func write_prop(tree: const Tree*, prop: const WProp*, out: Output*):
+func write_prop(tree: const Tree*, prop: const WProp*, out: Output*) -> !:
     out.put8(prop.kind)
     match prop.kind:
         'C', 'B': out.put8((u8)prop.bits)
@@ -192,8 +262,37 @@ func write_prop(tree: const Tree*, prop: const WProp*, out: Output*):
             out.bytes(tree.text.items[prop.start..<prop.start + prop.length])
         _:
             let blob = &tree.blobs.items[prop.start]
-            let packed = blob.packed.length > 0
+            let packed = blob.packed_length > 0
             out.put32((u32)blob.count)
             out.put32(1 if packed else 0)
-            out.put32((u32)(blob.packed.length if packed else blob.raw.length))
-            out.bytes(blob.packed if packed else blob.raw)
+            out.put32((u32)(blob.packed_length if packed else blob.raw.length))
+            # The bytes come later (encode_tree), a megabyte-sized piece a task.
+            let length = blob.packed_length if packed else blob.raw.length
+            var start: usize = 0
+            while start < length:
+                let end = start + copy_piece if length - start > copy_piece else length
+                try out.copies.push(Copy(at = (usize)out.at + start, blob = prop.start, start = start, end = end))
+                start = end
+            out.at += (u64)length
+
+## Array bytes copied in pieces of at most this many.
+let copy_piece: usize = 1048576
+
+## One piece of an array's bytes and where it goes.
+struct Copy:
+    var at: usize
+    var blob: usize
+    var start: usize
+    var end: usize
+
+struct CopyWork:
+    var tree: const Tree*
+    var data: u8[]
+    var copies: const Copy[]
+
+func copy_array(context: void*?, index: usize):
+    let work = (CopyWork*)(context else return)
+    let piece = work.copies[index]
+    let blob = &work.tree.blobs.items[piece.blob]
+    let bytes = blob.packed if blob.packed_length > 0 else blob.raw
+    memory.copy(work.data[piece.at..], bytes[piece.start..<piece.end], piece.end - piece.start)

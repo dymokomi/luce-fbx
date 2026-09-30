@@ -119,6 +119,9 @@ func fill_faces(context: void*?, index: usize):
     let first = source.face_base + index * fill_grain
     let end = first + fill_grain if source.face_end - first > fill_grain else source.face_end
     let mapping = work.layer.mapping
+    if work.domain == Domain.corner and mapping == Mapping.polygon_vertex and work.turn == 0 and work.bits.length == 0 and work.integers.length == 0:
+        fill_corner_numbers(work, first, end)
+        return
     for face in first..<end:
         let from_face = (usize)face_source[face]
         if work.domain == Domain.face:
@@ -134,6 +137,30 @@ func fill_faces(context: void*?, index: usize):
                 .polygon: element = from_face
                 _: element = 0
             write_value(work, corner, element, (usize)point_at(indices, vertex))
+
+## Faces `first..<end` of a corner layer by polygon vertex, as write_value
+## would fill them, in one loop (the common case: normals, UVs, colors).
+func fill_corner_numbers(work: FillWork*, first: usize, end: usize):
+    let layer = work.layer
+    let count = layer.value_count()
+    if count == 0: return
+    let offsets = work.build.offsets.view()
+    let corner_source = work.build.corner_source.view()
+    let values = layer.values
+    let index = layer.index
+    let width = layer.width
+    let from_component = work.first
+    let components = work.components
+    let scale = work.scale
+    let out = work.out
+    for corner in (usize)offsets[first]..<(usize)offsets[end]:
+        var value = (usize)corner_source[corner]
+        if index.length > 0:
+            let indexed = index[value] if value < index.length else -1
+            value = (usize)indexed if indexed >= 0 else count - 1
+        if value >= count: value = count - 1
+        let base = value * width + from_component
+        for k in 0..<components: out[corner * components + k] = values[base + k] * scale
 
 ## Write the layer value of `element` (through its index) as output element
 ## `at`.

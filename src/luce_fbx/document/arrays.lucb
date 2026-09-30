@@ -269,6 +269,16 @@ func convert(kind: u8, source: const u8[], element: Element, out: u8[], count: u
     if same_layout(kind, element):
         memory.copy(out, source, count * element_size(element))
         return
+    # The common narrowing and widening in plain loops (the file's values
+    # may be unaligned; the output is not).
+    if kind == 'd' and element == Element.real32:
+        let into = (f32*)out.data
+        for index in 0..<count: into[index] = (f32)memory.read[f64]((void*)&source[index * 8])
+        return
+    if kind == 'f' and element == Element.real64:
+        let into = (f64*)out.data
+        for index in 0..<count: into[index] = (f64)memory.read[f32]((void*)&source[index * 4])
+        return
     for index in 0..<count:
         match kind:
             'd': put_real(out, index, element, memory.read[f64]((void*)&source[index * 8]))

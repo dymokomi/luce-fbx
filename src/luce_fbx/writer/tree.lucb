@@ -7,12 +7,12 @@
 import math
 import memory
 import geocore_parallel as pool
-import compress
+import flate
 import luce_fbx.errors as errors
 import luce_fbx.source as source
 from luce_fbx.convert import Warnings
 from geocore import Vector3, Matrix4, Mesh
-from geocore_kernel import Attribute, AttributeStore, Domain, DataType, GeometrySet, Curves, CurveSettings, KnotMode, CurveType, Instances, Placement, set_component_count, set_component, set_detail, mesh_component, curves_type, instances_component, corner_edge_span, point_span, offset_span, corner_span, mesh_origin, attribute_entry, curves_origin
+from geocore_kernel import Float3, Attribute, AttributeStore, Domain, DataType, GeometrySet, Curves, CurveSettings, KnotMode, CurveType, Instances, Placement, set_component_count, set_component, set_detail, mesh_component, curves_type, instances_component, corner_edge_span, point_span, offset_span, corner_span, mesh_origin, attribute_entry, curves_origin
 from geocore_growing import Growing
 
 ## One node: its name (in the tree's text), properties and subtree.
@@ -34,13 +34,14 @@ struct WProp:
     var length: usize
 
 ## An array property's values: `count` elements of `raw` (owned), and after
-## packing `packed` (owned; empty when stored raw).
+## packing the zlib stream in `packed[..<packed_length]` (owned; empty when
+## stored raw).
 struct Blob:
     var kind: u8
     var count: usize
     var raw: u8[]
     var packed: u8[]
-    var failed: bool
+    var packed_length: usize
 
     mutating func release():
         if self.raw.length > 0: free(self.raw) in memory.heap
@@ -134,7 +135,7 @@ pub struct Tree:
     ## An array property of `count` elements in `raw`, which the tree takes
     ## (and frees, even when this fails).
     pub mutating func array(kind: u8, count: usize, raw: u8[]) -> !:
-        var blob = Blob(kind = kind, count = count, raw = raw, packed = empty_bytes(), failed = false)
+        var blob = Blob(kind = kind, count = count, raw = raw, packed = empty_bytes(), packed_length = 0)
         self.blobs.push(blob) catch failure:
             blob.release()
             error(failure.code, failure.message)

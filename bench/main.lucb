@@ -1,0 +1,93 @@
+## luce-fbx's benchmark. Prints one `name<TAB>milliseconds<TAB>count` line per
+## case; run.py builds it with --native --opt 3 and makes the table.
+##
+## The grid is geocore's verb benchmark grid (837x837 quads: 702,244 points,
+## 700,569 faces) with a corner uv, as luce-usd's bench makes it. The
+## reference rows time geocore's .prism codec on it. Files named on the
+## command line are read too (a load from bytes: parse and import).
+import time
+import memory
+import interop
+import geocore
+from geocore import Vector3, Mesh, GeometrySet
+from geocore_kernel import save_geometry, load_geometry, adopt_set, set_mesh, dispose_set
+from geocore_growing import Growing
+from fbx_kernel import Document, ImportOptions, ExportOptions, Warnings, import_document, encode_set, read_file
+from io import path
+
+func row(name: str, started: u64, count: usize):
+    print(f"{name}\t{(f64)time.since(started) / 1000000.0}\t{count}\t")
+
+## The n×n quad grid of geocore's verb benchmark.
+func quad_grid(n: usize) -> interop.Reference[Mesh]!:
+    let points = try alloc Vector3[(n + 1) * (n + 1)] in memory.heap
+    defer free(points) in memory.heap
+    let sizes = try alloc i64[n * n] in memory.heap
+    defer free(sizes) in memory.heap
+    let corners = try alloc i64[n * n * 4] in memory.heap
+    defer free(corners) in memory.heap
+    for z in 0..<n + 1:
+        for x in 0..<n + 1: points[z * (n + 1) + x] = Vector3((f64)x - (f64)n * 0.5, 0.0, (f64)z - (f64)n * 0.5)
+    for z in 0..<n:
+        for x in 0..<n:
+            let a = (i64)(z * (n + 1) + x)
+            let face = z * n + x
+            sizes[face] = 4
+            corners[face * 4] = a
+            corners[face * 4 + 1] = a + (i64)n + 1
+            corners[face * 4 + 2] = a + (i64)n + 2
+            corners[face * 4 + 3] = a + 1
+    return try interop.Reference[Mesh].adopt(try new Mesh(points, sizes, corners) in memory.heap, geocore.mesh_type, memory.heap)
+
+## Parse and import `data`: the faces of its mesh.
+func loaded(data: const u8[]) -> usize!:
+    var document = try Document.parse(data)
+    defer document.close()
+    var warnings = Warnings()
+    defer warnings.close()
+    let options = ImportOptions()
+    let set = try import_document(&document, &options, &warnings)
+    defer dispose_set(set)
+    if let mesh = set_mesh(set): return (usize)mesh.face_count()
+    return 0
+
+pub func main(arguments: str[]) -> i32!:
+    let grid = try quad_grid(837)
+    defer grid.release()
+    let mapped = try geocore.AttributeKernels.uv_project(grid, 1.0)
+    defer mapped.release()
+    let textured = try GeometrySet.of_mesh(mapped)
+    defer textured.release()
+    var file = Growing[u8]()
+    defer file.close()
+    try file.assign(path.temp().bytes)
+    for byte in "/luce-fbx-bench.prism".bytes: try file.push(byte)
+    var started = time.now()
+    let saved = try save_geometry(textured.value(), (str)file.view(), 1, 268435456)
+    row("Reference: save the grid with uv to .prism (bytes)", started, saved)
+    started = time.now()
+    let reloaded = try adopt_set(try load_geometry((str)file.view()))
+    row("Reference: load that .prism (faces)", started, (usize)((try reloaded.value().mesh()) else trap("mesh")).value().face_count())
+    reloaded.release()
+    var warnings = Warnings()
+    defer warnings.close()
+    for deflate in [true, false]:
+        let options = ExportOptions(version = 0, deflate = deflate)
+        started = time.now()
+        let bytes = try encode_set(try textured.get(), &options, &warnings)
+        defer free(bytes) in memory.heap
+        row("write: the grid, deflated (bytes)" if deflate else "write: the grid, raw arrays (bytes)", started, bytes.length)
+        started = time.now()
+        let faces = try loaded(bytes)
+        row("read: that file, deflated (faces)" if deflate else "read: that file, raw arrays (faces)", started, faces)
+    for at in 1..<arguments.length:
+        let data = try read_file(arguments[at])
+        defer free(data) in memory.heap
+        started = time.now()
+        let faces = try loaded(data)
+        var line: u8[512] = ---
+        # The file's name, not its directory.
+        var name_start = arguments[at].length
+        while name_start > 0 and arguments[at].bytes[name_start - 1] != '/': name_start -= 1
+        row(try format(line, f"read: {(str)arguments[at].bytes[name_start..]} (faces)"), started, faces)
+    return 0

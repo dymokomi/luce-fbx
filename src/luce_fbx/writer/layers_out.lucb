@@ -100,39 +100,72 @@ func open_layer(tree: Tree*, layers: LayerList*, kind: u8, set: i32, name: str, 
     try tree.leaf_string("ReferenceInformationType", "IndexToDirect" if indexed else "Direct")
     try layers.entries.push((kind, set))
 
-## An array of f64 `values` named `key`, taking them.
-func real_array(tree: Tree*, key: str, values: u8[], count: usize) -> !:
+## An array of f32 values named `key` (`raw` taken). Layer values are
+## written in single precision whatever the attribute holds: what FBX
+## consumers keep, and half the bytes of f64.
+func real_array(tree: Tree*, key: str, raw: u8[]) -> !:
     try tree.begin(key)
-    try tree.array('d', count, values)
+    try tree.array('f', raw.length // 4, raw)
     tree.end()
 
-## The identity index 0..<count named `key`.
-func identity_index(tree: Tree*, key: str, count: usize) -> !:
-    let raw = try alloc u8[count * 4] in memory.heap
-    let out = i32[]((i32*)raw.data, count)
-    for at in 0..<count: out[at] = (i32)at
-    try tree.begin(key)
-    try tree.array('i', count, raw)
-    tree.end()
-
-## `width` components of `entry` per element (missing ones 0), times `scale`.
+## `width` components of `entry` per element (missing ones 0), times
+## `scale`, as f32; a float column is read directly, in parallel chunks.
 func gathered(entry: const Attribute*, elements: const i32[], width: usize, scale: f64) -> u8[]!:
     let count = element_count(elements, entry.domain)
-    let raw = try alloc u8[count * width * 8] in memory.heap
-    let out = f64[]((f64*)raw.data, count * width)
+    let raw = try alloc u8[count * width * 4] in memory.heap
+    let out = f32[]((f32*)raw.data, count * width)
+    let direct = entry.width >= width and entry.domain != Domain.detail
+    if direct and entry.kind == DataType.float32 and entry.data.view().length >= entry.elements * entry.width * 4:
+        var work = GatherWork(elements = elements, stride = entry.width, width = width, scale = scale, doubles = no_doubles(), singles = f32[]((f32*)entry.data.view().data, entry.elements * entry.width), out = out)
+        pool.parallel_for(count, 65536, gather_chunk, (void*)&work)
+        return raw
+    if direct and entry.kind == DataType.float64 and entry.data.view().length >= entry.elements * entry.width * 8:
+        var work = GatherWork(elements = elements, stride = entry.width, width = width, scale = scale, doubles = f64[]((f64*)entry.data.view().data, entry.elements * entry.width), singles = no_singles(), out = out)
+        pool.parallel_for(count, 65536, gather_chunk, (void*)&work)
+        return raw
     for at in 0..<count:
         let element = element_at(elements, entry.domain, at)
         for k in 0..<width:
-            out[at * width + k] = entry.number(element, k) * scale if k < entry.width else 0.0
+            out[at * width + k] = (f32)(entry.number(element, k) * scale) if k < entry.width else 0.0
     return raw
 
+## A float column's values gathered by element into f32.
+struct GatherWork:
+    var elements: const i32[]
+    var stride: usize
+    var width: usize
+    var scale: f64
+    var doubles: const f64[]
+    var singles: const f32[]
+    var out: f32[]
+
+func gather_chunk(context: void*?, first: usize, end: usize):
+    let work = (GatherWork*)(context else return)
+    let width = work.width
+    let stride = work.stride
+    if work.doubles.length > 0:
+        for at in first..<end:
+            let base = (usize)work.elements[at] * stride
+            for k in 0..<width: work.out[at * width + k] = (f32)(work.doubles[base + k] * work.scale)
+        return
+    let factor = (f32)work.scale
+    for at in first..<end:
+        let base = (usize)work.elements[at] * stride
+        for k in 0..<width: work.out[at * width + k] = work.singles[base + k] * factor
+
+func no_doubles() -> f64[]:
+    var none_yet: f64[]
+    return none_yet
+
+func no_singles() -> f32[]:
+    var none_yet: f32[]
+    return none_yet
+
 ## A float layer: Normals, Tangents, Binormals or UV.
-func float_layer(tree: Tree*, layers: LayerList*, part: const MeshPart*, entry: const Attribute*, kind: u8, set: i32, name: str, key: str, index_key: str, width: usize) -> !:
+func float_layer(tree: Tree*, layers: LayerList*, part: const MeshPart*, entry: const Attribute*, kind: u8, set: i32, name: str, key: str, width: usize) -> !:
     let elements = elements_of(part, entry.domain)
-    let count = element_count(elements, entry.domain)
-    try open_layer(tree, layers, kind, set, name, entry.domain, index_key.length > 0)
-    try real_array(tree, key, try gathered(entry, elements, width, 1.0), count * width)
-    if index_key.length > 0: try identity_index(tree, index_key, count)
+    try open_layer(tree, layers, kind, set, name, entry.domain, false)
+    try real_array(tree, key, try gathered(entry, elements, width, 1.0))
     tree.end()
 
 ## A color layer: RGBA from `Cd*` and its `Alpha*` (1 without one).
@@ -143,17 +176,16 @@ func color_out(tree: Tree*, layers: LayerList*, mesh: const Mesh*, part: const M
     var alpha_name: u8[16] = ---
     let found = mesh.find_attribute(try format(alpha_name, f"Alpha{set + 1}") if set > 0 else "Alpha", (i64)(u8)entry.domain)
     if found >= 0: alpha = try attribute_entry(mesh, found)
-    let raw = try alloc u8[count * 32] in memory.heap
-    let out = f64[]((f64*)raw.data, count * 4)
+    let raw = try alloc u8[count * 16] in memory.heap
+    let out = f32[]((f32*)raw.data, count * 4)
     for at in 0..<count:
         let element = element_at(elements, entry.domain, at)
-        for k in 0..<(usize)3: out[at * 4 + k] = entry.number(element, k)
+        for k in 0..<(usize)3: out[at * 4 + k] = (f32)entry.number(element, k)
         var a = entry.number(element, 3) if entry.width >= 4 else 1.0
         if let values = alpha: a = values.number(element, 0)
-        out[at * 4 + 3] = a
-    try open_layer(tree, layers, color_layer, set, entry.name(), entry.domain, true)
-    try real_array(tree, "Colors", raw, count * 4)
-    try identity_index(tree, "ColorIndex", count)
+        out[at * 4 + 3] = (f32)a
+    try open_layer(tree, layers, color_layer, set, entry.name(), entry.domain, false)
+    try real_array(tree, "Colors", raw)
     tree.end()
 
 ## An integer layer with one value per element: `values` taken.
@@ -184,23 +216,23 @@ func write_layers(job: Export*, mesh: const Mesh*, part: const MeshPart*, layers
         if not written(entry): continue
         let name = entry.name()
         if set_of(name, "N") >= 0:
-            try float_layer(tree, layers, part, entry, normal_layer, set_of(name, "N"), "", "Normals", "", 3)
+            try float_layer(tree, layers, part, entry, normal_layer, set_of(name, "N"), "", "Normals", 3)
             normals = true
-        elif set_of(name, "tangentu") >= 0: try float_layer(tree, layers, part, entry, tangent_layer, set_of(name, "tangentu"), "", "Tangents", "", 3)
-        elif set_of(name, "tangentv") >= 0: try float_layer(tree, layers, part, entry, binormal_layer, set_of(name, "tangentv"), "", "Binormals", "", 3)
-        elif set_of(name, "uv") >= 0: try float_layer(tree, layers, part, entry, uv_layer, set_of(name, "uv"), name, "UV", "UVIndex", 2)
+        elif set_of(name, "tangentu") >= 0: try float_layer(tree, layers, part, entry, tangent_layer, set_of(name, "tangentu"), "", "Tangents", 3)
+        elif set_of(name, "tangentv") >= 0: try float_layer(tree, layers, part, entry, binormal_layer, set_of(name, "tangentv"), "", "Binormals", 3)
+        elif set_of(name, "uv") >= 0: try float_layer(tree, layers, part, entry, uv_layer, set_of(name, "uv"), name, "UV", 2)
         elif set_of(name, "Cd") >= 0: try color_out(tree, layers, mesh, part, entry, set_of(name, "Cd"))
         elif name == "smoothing_group": smoothing = entry
         elif name == "sharp": sharp = entry
         elif name == "crease":
             let elements = part.edges.view()
             try open_layer(tree, layers, edge_crease_layer, 0, "", Domain.edge, false)
-            try real_array(tree, "EdgeCrease", try gathered(entry, elements, 1, 0.1), elements.length)
+            try real_array(tree, "EdgeCrease", try gathered(entry, elements, 1, 0.1))
             tree.end()
         elif name == "corner_sharpness":
             let elements = part.points.view()
             try open_layer(tree, layers, vertex_crease_layer, 0, "", Domain.point, false)
-            try real_array(tree, "VertexCrease", try gathered(entry, elements, 1, 0.1), elements.length)
+            try real_array(tree, "VertexCrease", try gathered(entry, elements, 1, 0.1))
             tree.end()
         elif name == "hole": try int_layer(tree, layers, hole_layer, Domain.face, "Hole", try group_values(entry, part.faces.view(), 1, 0), part.faces.count)
         elif name == "hidden": try int_layer(tree, layers, visibility_layer, Domain.edge, "Visibility", try group_values(entry, part.edges.view(), 0, 1), part.edges.count)

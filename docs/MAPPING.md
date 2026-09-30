@@ -132,18 +132,21 @@ right-handed and scaled to meters, and the details say +Y and 1.
 Blender's exporter writes it (header, FBXHeaderExtension with a fixed 1970
 timestamp so saves are reproducible, GlobalSettings, Documents, References,
 Definitions, Objects, Connections, Takes). Arrays over 128 bytes are
-deflated, one pool task per array; `deflate = false` stores them raw.
+deflated (zlib level 1) in independent 512 KiB pieces on the pool, joined
+into one stream per array; `deflate = false` stores them raw.
 
 - **Meshes.** Faces are grouped by their `path` text. Each group is one
   Geometry and one Model at that path (its names split at `/`; missing
   ancestors are Null models); faces without a path go to a model named
   `mesh`. Points are written in world space (f64, the mesh origin added
   back), so models have identity transforms; a mesh of one group keeps its
-  point order. `PolygonVertexIndex` ends each face with ~index, and `Edges`
-  names each edge's first polygon vertex.
-- **Layer elements**, the reverse of the table above: `N*` Normal,
-  `tangentu*`/`tangentv*` Tangent/Binormal, `uv*` UV and `Cd*` with
-  `Alpha*` Color (RGBA; both IndexToDirect with an identity index),
+  point order (unused points too). `PolygonVertexIndex` ends each face with
+  ~index; `Edges`, each edge's first polygon vertex, is written when an
+  edge layer needs it.
+- **Layer elements**, the reverse of the table above, their values f32
+  whatever the attribute holds (what FBX consumers keep; half the bytes of
+  f64): `N*` Normal, `tangentu*`/`tangentv*` Tangent/Binormal, `uv*` UV and
+  `Cd*` with `Alpha*` Color (RGBA), all Direct,
   `smoothing_group` or else `sharp` Smoothing (a mesh with neither and no
   normals is written flat, as geocore shows it), `crease` and
   `corner_sharpness` EdgeCrease and VertexCrease (/ 10), `hole` Hole,

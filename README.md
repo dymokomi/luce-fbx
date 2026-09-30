@@ -91,4 +91,8 @@ layers, materials, curves, instance rows, 7500 and raw arrays, a
 the local ufbx parity oracle prints; `--save` also writes it, for the local
 round-trip checks against ufbx and Blender.
 
+`bench/run.py [FILES...]` times writing and reading a 700k-face grid and
+loading any FBX files named; [docs/BENCHMARKS.md](docs/BENCHMARKS.md) has the
+numbers.
+
 Apache-2.0 or MIT.
