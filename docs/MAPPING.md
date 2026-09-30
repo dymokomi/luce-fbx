@@ -111,7 +111,12 @@ right-handed and scaled to meters, and the details say +Y and 1.
 
 ## What is left out
 
-- Animation beyond one time: one pose is imported (FBX 6 takes are not read).
+- Animation beyond one time: one pose is imported.
+- FBX 6 takes (a known gap, legacy): FBX 6.1 files keep their animation in
+  a Takes section this reader does not decode. Such a file imports at its
+  rest values with the warning "FBX 6 takes (animation) are not read"; FBX 7
+  animation is read in full. These files are the animated mismatches in
+  PARITY.md.
 - Skeletons as data: bones place skinned points but are not imported.
 - Cameras, lights, constraints and other node attributes.
 - Material properties and textures (only the material name).

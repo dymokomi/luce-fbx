@@ -48,6 +48,9 @@ out. [docs/PARITY.md](docs/PARITY.md) records the comparison with ufbx.
   extrapolation mode, and layers; blend shapes with in-betweens; linear, dual
   quaternion and blended skins.
 
+Known gap: FBX 6 takes (legacy animation) are not read; such files import at
+their rest values with a warning (docs/MAPPING.md, "What is left out").
+
 ## How it is built
 
 - `document/`: one flat node table for both encodings; arrays are recorded, not
