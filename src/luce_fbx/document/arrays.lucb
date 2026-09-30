@@ -1,0 +1,334 @@
+## Array decoding in one parallel batch. The converter plans every array a
+## load needs (an `ArrayJob`: a node's array, the element type wanted and
+## exactly sized output) and hands them over together; the batch runs on
+## luce-geocore's pool:
+##
+## - a zlib array inflates whole, as one item, straight into its output when
+##   the file's element type is the one wanted (else into scratch, then
+##   converted);
+## - a raw array is copied or converted in slices;
+## - an ASCII array's text is cut at separators into pieces, which count
+##   their numbers in parallel, then parse them in parallel into their place.
+##
+## A node's array is its first property when that is an array; otherwise its
+## numeric scalar properties (short FBX 6 lists and single values).
+
+## The element types the converter asks for.
+pub enum Element as u8:
+    real32 = 0
+    real64 = 1
+    int32 = 2
+    int64 = 3
+    byte = 4
+
+pub func element_size(element: Element) -> usize:
+    match element:
+        .real32, .int32: return 4
+        .real64, .int64: return 8
+        _: return 1
+
+## One array to decode: the array of `node` into `out`, which holds exactly
+## its elements as `element`s.
+pub struct ArrayJob:
+    pub var node: u32
+    pub var element: Element
+    pub var out: u8[]
+
+## Raw elements per item.
+let raw_slice: usize = 1048576
+## ASCII array text per piece, at least.
+let text_piece: usize = 262144
+
+## One item of the batch: part of one job.
+struct Piece:
+    var job: usize
+    ## Source bytes (raw: element range; text: byte range) and the first
+    ## element this piece writes.
+    var start: usize
+    var end: usize
+    var first: usize
+    var count: usize
+    var failed: bool
+    ## Why it failed.
+    var code: ErrorCode
+    var message: str
+
+struct Batch:
+    var document: const Document*
+    var jobs: const ArrayJob[]
+    var pieces: Piece[]
+
+extend Document:
+    ## The array property of `node`, if its first property is one.
+    pub func array_property(node: u32) -> const Property*?:
+        let found = self.property(node, 0) else return none
+        if found.kind == 'b' or found.kind == 'i' or found.kind == 'l' or found.kind == 'f' or found.kind == 'd' or found.kind == 'a': return found
+        return none
+
+    ## How many elements `node`'s array holds.
+    pub func array_count(node: u32) -> usize:
+        if let found = self.array_property(node): return found.count
+        var count: usize = 0
+        for index in 0..<self.property_count(node):
+            let found = self.property(node, index) else break
+            if is_numeric_scalar(found.kind): count += 1
+        return count
+
+    ## Decode `node`'s array into a fresh heap span of `element`s (small
+    ## arrays: settings, matrices, keys); the caller frees it.
+    pub func decoded[T](node: u32, element: Element) -> T[]!:
+        let count = self.array_count(node)
+        let out = try alloc T[count] in memory.heap
+        errdefer free(out) in memory.heap
+        let bytes = u8[]((u8*)out.data, count * sizeof(T))
+        let jobs: ArrayJob[1] = [ArrayJob(node, element, bytes)]
+        try self.decode_arrays(jobs[..<1])
+        return out
+
+    ## Decode every job, in parallel.
+    pub func decode_arrays(jobs: const ArrayJob[]) -> !:
+        for job in jobs:
+            if job.out.length != self.array_count(job.node) * element_size(job.element):
+                error(errors.invalid, "an FBX array decode was planned with the wrong size")
+        var pieces = Growing[Piece]()
+        defer pieces.close()
+        try self.plan(jobs, &pieces)
+        var batch = Batch(&self, jobs, pieces.items[..<pieces.count])
+        # Text pieces count their numbers first, to know where they write.
+        var counting = false
+        for piece in batch.pieces:
+            if let found = self.array_property(jobs[piece.job].node):
+                if found.kind == 'a': counting = true
+        if counting:
+            pool.run(batch.pieces.length, count_piece, (void*)&batch)
+            try self.place_text_pieces(&batch)
+        pool.run(batch.pieces.length, decode_piece, (void*)&batch)
+        for piece in batch.pieces:
+            if piece.failed: error(piece.code, piece.message)
+
+    ## The items for `jobs`: zlib arrays whole and first (the longest work
+    ## starts earliest), raw arrays in slices, text in pieces.
+    func plan(jobs: const ArrayJob[], pieces: Growing[Piece]*) -> !:
+        for pass in 0..<2:
+            for (index, job) in jobs.indexed():
+                var encoding = Encoding.raw
+                var whole = true
+                if let found = self.array_property(job.node):
+                    encoding = found.encoding
+                    whole = encoding == Encoding.zlib
+                if (pass == 0) != (encoding == Encoding.zlib): continue
+                let count = self.array_count(job.node)
+                if count == 0: continue
+                if whole:
+                    try pieces.push(Piece(job = index, start = 0, end = count, first = 0, count = count, failed = false, code = errors.invalid, message = ""))
+                elif encoding == Encoding.raw:
+                    var first: usize = 0
+                    while first < count:
+                        let end = first + raw_slice if count - first > raw_slice else count
+                        try pieces.push(Piece(job = index, start = first, end = end, first = first, count = end - first, failed = false, code = errors.invalid, message = ""))
+                        first = end
+                else:
+                    # Text: cut after a separator every text_piece bytes.
+                    let found = self.array_property(job.node) else continue
+                    let text = self.data[found.offset..<found.offset + found.size]
+                    var start: usize = 0
+                    while start < text.length:
+                        var end = start + text_piece
+                        if end >= text.length:
+                            end = text.length
+                        else:
+                            while end < text.length and text[end] != ',': end += 1
+                            if end < text.length: end += 1
+                        try pieces.push(Piece(job = index, start = start, end = end, first = 0, count = 0, failed = false, code = errors.invalid, message = ""))
+                        start = end
+
+    ## After counting: each text piece's first element, and each array's
+    ## total checked against its declared count.
+    func place_text_pieces(batch: Batch*) -> !:
+        var at: usize = 0
+        while at < batch.pieces.length:
+            let job = batch.pieces[at].job
+            let found = self.array_property(batch.jobs[job].node) else error(errors.invalid, "an FBX array lost its property")
+            if found.kind != 'a':
+                at += 1
+                continue
+            var total: usize = 0
+            while at < batch.pieces.length and batch.pieces[at].job == job:
+                if batch.pieces[at].failed: error(errors.invalid, "an ASCII FBX array holds something other than numbers")
+                batch.pieces[at].first = total
+                total += batch.pieces[at].count
+                at += 1
+            if total != found.count: error(errors.invalid, "an ASCII FBX array holds a different number of values than it declares")
+
+func is_numeric_scalar(kind: u8) -> bool:
+    return kind == 'C' or kind == 'Y' or kind == 'I' or kind == 'L' or kind == 'F' or kind == 'D' or kind == 'N'
+
+func count_piece(context: void*?, index: usize):
+    let batch = (Batch*)(context else return)
+    let piece = &batch.pieces[index]
+    let found = batch.document.array_property(batch.jobs[piece.job].node) else return
+    if found.kind != 'a': return
+    let text = batch.document.data[found.offset + piece.start..<found.offset + piece.end]
+    if let count = count_numbers(text):
+        piece.count = count
+    else:
+        piece.failed = true
+
+## How many numbers a piece of array text holds, or none when something
+## other than numbers, separators and white space is there.
+func count_numbers(text: const u8[]) -> usize?:
+    var count: usize = 0
+    var inside = false
+    var comment = false
+    for byte in text:
+        if comment:
+            if byte == '\n': comment = false
+        elif byte == ';':
+            comment = true
+            inside = false
+        elif byte == ',' or byte == ' ' or byte == '\n' or byte == '\r' or byte == '\t':
+            inside = false
+        elif is_number_byte(byte):
+            if not inside: count += 1
+            inside = true
+        else:
+            return none
+    return count
+
+func is_number_byte(byte: u8) -> bool:
+    return (byte >= '0' and byte <= '9') or byte == '-' or byte == '+' or byte == '.' or byte == '#' or byte == '(' or byte == ')' or byte == '_' or (byte >= 'A' and byte <= 'Z') or (byte >= 'a' and byte <= 'z')
+
+func decode_piece(context: void*?, index: usize):
+    let batch = (Batch*)(context else return)
+    let piece = &batch.pieces[index]
+    decode_one(batch, *piece) catch failure:
+        piece.failed = true
+        piece.code = failure.code
+        piece.message = failure.message
+
+## Decode one piece into its job's output.
+func decode_one(batch: const Batch*, piece: Piece) -> !:
+    let document = batch.document
+    let job = batch.jobs[piece.job]
+    let size = element_size(job.element)
+    let out = job.out[piece.first * size..<(piece.first + piece.count) * size]
+    let property = document.array_property(job.node)
+    if property == none:
+        try scalars(document, job.node, job.element, out)
+        return
+    let found = property else return
+    if found.encoding == Encoding.text:
+        let text = document.data[found.offset + piece.start..<found.offset + piece.end]
+        try parse_numbers(text, job.element, out, piece.count)
+        return
+    let source_size = element_bytes(found.kind)
+    if found.encoding == Encoding.raw and not document.big:
+        let bytes = document.data[found.offset + piece.start * source_size..<found.offset + piece.end * source_size]
+        convert(found.kind, bytes, job.element, out, piece.count)
+        return
+    if found.encoding == Encoding.zlib and same_layout(found.kind, job.element) and not document.big:
+        try inflate(document.data[found.offset..<found.offset + found.size], out)
+        return
+    # Through scratch: a zlib array of another type, or a big-endian array
+    # (its elements swapped first).
+    let scratch = try alloc u8[piece.count * source_size] in memory.heap
+    defer free(scratch) in memory.heap
+    if found.encoding == Encoding.raw:
+        memory.copy(scratch, document.data[found.offset + piece.start * source_size..], scratch.length)
+    else:
+        try inflate(document.data[found.offset..<found.offset + found.size], scratch)
+    if document.big: swap_elements(scratch, source_size)
+    convert(found.kind, scratch, job.element, out, piece.count)
+
+## Inflate a zlib array's stream into exactly `out`.
+func inflate(stream: const u8[], out: u8[]) -> !:
+    let used = flate.inflate_zlib(stream, out) catch failure:
+        if failure.code == memory.exhausted: error(failure.code, failure.message)
+        error(errors.invalid, "a zlib FBX array is corrupt")
+    if used != stream.length: error(errors.invalid, "a zlib FBX array has bytes after its stream")
+
+## Reverse the bytes of each `size`-byte element.
+func swap_elements(bytes: u8[], size: usize):
+    if size < 2: return
+    var at: usize = 0
+    while at + size <= bytes.length:
+        for index in 0..<size // 2:
+            let byte = bytes[at + index]
+            bytes[at + index] = bytes[at + size - 1 - index]
+            bytes[at + size - 1 - index] = byte
+        at += size
+
+## Whether an array of `kind` already has `element`'s bytes.
+func same_layout(kind: u8, element: Element) -> bool:
+    match element:
+        .real32: return kind == 'f'
+        .real64: return kind == 'd'
+        .int32: return kind == 'i'
+        .int64: return kind == 'l'
+        _: return kind == 'b'
+
+## `count` elements of binary array type `kind` in `source` as `element`s.
+func convert(kind: u8, source: const u8[], element: Element, out: u8[], count: usize):
+    if same_layout(kind, element):
+        memory.copy(out, source, count * element_size(element))
+        return
+    for index in 0..<count:
+        match kind:
+            'd': put_real(out, index, element, memory.read[f64]((void*)&source[index * 8]))
+            'f': put_real(out, index, element, (f64)memory.read[f32]((void*)&source[index * 4]))
+            'i': put_integer(out, index, element, (i64)memory.read[i32]((void*)&source[index * 4]))
+            'l': put_integer(out, index, element, memory.read[i64]((void*)&source[index * 8]))
+            _: put_integer(out, index, element, (i64)source[index])
+
+func put_real(out: u8[], index: usize, element: Element, value: f64):
+    match element:
+        .real32: memory.write[f32]((void*)&out[index * 4], (f32)value)
+        .real64: memory.write[f64]((void*)&out[index * 8], value)
+        .int32: memory.write[i32]((void*)&out[index * 4], (i32)value)
+        .int64: memory.write[i64]((void*)&out[index * 8], (i64)value)
+        _: out[index] = (u8)(value != 0.0)
+
+func put_integer(out: u8[], index: usize, element: Element, value: i64):
+    match element:
+        .real32: memory.write[f32]((void*)&out[index * 4], (f32)value)
+        .real64: memory.write[f64]((void*)&out[index * 8], (f64)value)
+        .int32: memory.write[i32]((void*)&out[index * 4], (i32)value)
+        .int64: memory.write[i64]((void*)&out[index * 8], value)
+        _: out[index] = (u8)(value != 0)
+
+## Parse the numbers of array text into `count` elements.
+func parse_numbers(text: const u8[], element: Element, out: u8[], count: usize) -> !:
+    var at: usize = 0
+    var index: usize = 0
+    while at < text.length:
+        let byte = text[at]
+        if byte == ';':
+            while at < text.length and text[at] != '\n': at += 1
+            continue
+        if not is_number_byte(byte):
+            at += 1
+            continue
+        let start = at
+        while at < text.length and is_number_byte(text[at]): at += 1
+        if index >= count: error(errors.invalid, "an ASCII FBX array holds more values than it declares")
+        let token = text[start..<at]
+        if element == Element.real32 or element == Element.real64:
+            put_real(out, index, element, try parse_real(token))
+        elif let integer = parse_integer(token):
+            put_integer(out, index, element, integer)
+        else:
+            put_real(out, index, element, try parse_real(token))
+        index += 1
+    if index != count: error(errors.invalid, "an ASCII FBX array holds fewer values than it declares")
+
+## A node's numeric scalar properties as an array.
+func scalars(document: const Document*, node: u32, element: Element, out: u8[]) -> !:
+    var index: usize = 0
+    for at in 0..<document.property_count(node):
+        let found = document.property(node, at) else break
+        if not is_numeric_scalar(found.kind): continue
+        if found.kind == 'F' or found.kind == 'D' or (found.kind == 'N' and (element == Element.real32 or element == Element.real64)):
+            put_real(out, index, element, found.real)
+        else:
+            put_integer(out, index, element, found.integer)
+        index += 1

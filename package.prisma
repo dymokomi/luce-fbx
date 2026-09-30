@@ -5,18 +5,21 @@ def package "luce-fbx" {
     str kind = "package"
     str language = "luce-base"
     str readme = "README.md"
-    str description = "Bounded static FBX polygon geometry reader in Luce Base."
+    str description = "FBX in Luce Base: binary and ASCII reading (scene, transforms, meshes, animation, skins and blend shapes at a time) and binary writing, with luce-geocore GeometrySet conversion."
     def export "fbx" {
         str module = "luce_fbx.fbx"
     }
+    def export "fbx_kernel" {
+        str module = "luce_fbx.kernel"
+    }
     def dependency "luce-geocore" {
         str owner = "dymokomi"
-        str version = "^0.2.0"
+        str version = "^0.2.2"
         str path = "../luce-geocore"
     }
     def dependency "luce-compress" {
         str owner = "dymokomi"
-        str version = "^0.2.3"
+        str version = "^0.2.5"
         str path = "../luce-compress"
     }
     def dependency "luce-std" {

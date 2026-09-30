@@ -1,0 +1,89 @@
+## Rotations and translation-rotation-scale transforms, as FBX (and ufbx)
+## compose them: Euler angles in degrees applied in a rotation order, kept
+## as unit quaternions until a matrix is needed.
+
+pub struct Quat:
+    pub var x: f64 = 0.0
+    pub var y: f64 = 0.0
+    pub var z: f64 = 0.0
+    pub var w: f64 = 1.0
+
+    ## This rotation after `other` (other is applied first).
+    pub func times(other: Quat) -> Quat:
+        return Quat(self.w * other.x + self.x * other.w + self.y * other.z - self.z * other.y,
+                    self.w * other.y - self.x * other.z + self.y * other.w + self.z * other.x,
+                    self.w * other.z + self.x * other.y - self.y * other.x + self.z * other.w,
+                    self.w * other.w - self.x * other.x - self.y * other.y - self.z * other.z)
+
+    pub func inverse() -> Quat:
+        return Quat(-self.x, -self.y, -self.z, self.w)
+
+    pub func rotate(v: Vector3) -> Vector3:
+        # v + 2w(q x v) + 2 q x (q x v)
+        let q = Vector3(self.x, self.y, self.z)
+        let t = q.cross(v).multiply_scalar(2.0)
+        return v.add(t.multiply_scalar(self.w)).add(q.cross(t))
+
+    pub func is_identity() -> bool:
+        return self.x == 0.0 and self.y == 0.0 and self.z == 0.0 and self.w == 1.0
+
+## A rotation of `degrees` about axis `axis` (0 X, 1 Y, 2 Z).
+func axis_rotation(axis: usize, degrees: f64) -> Quat:
+    let half = degrees * (math.pi / 360.0)
+    let s = math.sin(half)
+    let c = math.cos(half)
+    match axis:
+        0: return Quat(s, 0.0, 0.0, c)
+        1: return Quat(0.0, s, 0.0, c)
+        _: return Quat(0.0, 0.0, s, c)
+
+## The axes of each FBX rotation order, first applied first: XYZ, XZY, YZX,
+## YXZ, ZXY, ZYX; spheric XYZ (6) rotates as XYZ, as ufbx does.
+let order_axes: u8[18] = [0, 1, 2, 0, 2, 1, 1, 2, 0, 1, 0, 2, 2, 0, 1, 2, 1, 0]
+
+## Euler angles in degrees as a rotation, in `order` (an FBX RotationOrder).
+pub func euler(degrees: Vector3, order: i64) -> Quat:
+    var row: usize = 0
+    if order >= 0 and order < 6: row = (usize)order * 3
+    let angles: f64[3] = [degrees.x, degrees.y, degrees.z]
+    var result = Quat()
+    for step: usize in 0..<3:
+        let axis = (usize)order_axes[row + step]
+        if angles[axis] != 0.0: result = axis_rotation(axis, angles[axis]).times(result)
+    return result
+
+## Translation, rotation and scale: the point is scaled, rotated, then moved.
+pub struct Trs:
+    pub var translation: Vector3 = Vector3()
+    pub var rotation: Quat = Quat()
+    pub var scale: Vector3 = Vector3(1.0, 1.0, 1.0)
+
+    ## Scale the whole transform (as S * T, ufbx's ufbxi_mul_scale).
+    pub mutating func scaled(by: Vector3):
+        self.translation = Vector3(self.translation.x * by.x, self.translation.y * by.y, self.translation.z * by.z)
+        self.scale = Vector3(self.scale.x * by.x, self.scale.y * by.y, self.scale.z * by.z)
+
+    ## Rotate the whole transform (as R * T).
+    pub mutating func rotated(by: Quat):
+        if by.is_identity(): return
+        self.rotation = by.times(self.rotation)
+        self.translation = by.rotate(self.translation)
+
+    pub mutating func moved(by: Vector3):
+        self.translation = self.translation.add(by)
+
+    pub func matrix() -> Matrix4:
+        let q = self.rotation
+        let x = q.rotate(Vector3(self.scale.x, 0.0, 0.0))
+        let y = q.rotate(Vector3(0.0, self.scale.y, 0.0))
+        let z = q.rotate(Vector3(0.0, 0.0, self.scale.z))
+        return Matrix4(x, y, z, self.translation)
+
+    ## The matrix without the scale.
+    pub func unscaled() -> Matrix4:
+        var copy = self
+        copy.scale = Vector3(1.0, 1.0, 1.0)
+        return copy.matrix()
+
+    pub func is_identity() -> bool:
+        return self.translation == Vector3() and self.rotation.is_identity() and self.scale == Vector3(1.0, 1.0, 1.0)

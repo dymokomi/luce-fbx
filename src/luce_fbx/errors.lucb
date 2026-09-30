@@ -1,0 +1,10 @@
+## luce-fbx's error codes, one per kind of failure. Messages say what went
+## wrong and, where it helps, which node or array.
+
+## The bytes are not an FBX file, or are malformed.
+pub let invalid: ErrorCode = ErrorCode.package(800)
+## Valid FBX that this package does not read or write (FBX 5 and older, an
+## array encoding other than raw or zlib).
+pub let unsupported: ErrorCode = ErrorCode.package(801)
+## A size past what the file can hold or this machine's memory allows.
+pub let limit: ErrorCode = ErrorCode.package(802)

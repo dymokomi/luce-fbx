@@ -1,0 +1,77 @@
+## The scene layer: the transform stack (pivots, offsets, pre- and
+## post-rotation, rotation orders, RotationActive, the three inherit types,
+## geometric transforms) against the matrices ufbx computes for the same
+## file; settings; sibling paths; FBX 6 scenes (objects named, geometry in
+## the Model).
+import memory
+import math
+from fbx_kernel import Document, Scene, Hierarchy, read_file
+from geocore import Matrix4, Vector3
+
+## A model's world matrix as ufbx computes it: 12 numbers, column by column.
+struct Expected:
+    let path: str
+    let world: f64[12]
+
+## ufbxdump --precise tests/fixtures/transforms_7500_ascii.fbx
+let expected: Expected[9] = [
+    Expected("/Pivots", [0.78410209404243136, 0.5212805763691758, -0.33682408883346515, -0.98480775301220802, 1.7057370639048866, 0.34729635533386066, 1.1333582649278737, 0.089086761920826985, 2.7762497351949702, 1.6786105333270389, 1.0388174603220925, 3.7172587623928974]),
+    Expected("/Geometric", [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 5.0, 0.0, 0.0]),
+    Expected("/Twin", [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]),
+    Expected("/Twin_2", [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 2.0]),
+    Expected("/Pivots/PrePost", [-0.43030324351218052, -0.51155220941594293, -0.74374286932014644, -0.020530192387606144, 1.6532864856372862, -1.1252654387341863, 2.7078780839999546, -0.70340427585813659, -1.0828752037502885, 0.69380278031483089, 2.7445545242269791, 4.0645551177267585]),
+    Expected("/Pivots/Inactive", [0.28730880295853545, 0.34760307929542006, -0.89253893528903006, -0.98480775301220802, 1.7057370639048866, 0.34729635533386066, 2.4647370381642451, 1.1687969448225968, 1.24859322218035, 1.6786105333270389, 1.0388174603220925, 3.7172587623928974]),
+    Expected("/Pivots/RrSs", [1.5682041880848627, 1.0425611527383516, -0.6736481776669303, -0.98480775301220802, 1.7057370639048866, 0.34729635533386066, 1.1333582649278737, 0.089086761920826985, 2.7762497351949702, 2.4627126273694704, 1.5600980366912682, 3.3804346735594324]),
+    Expected("/Pivots/RrSs/Rrs", [0.78410209404243136, 0.5212805763691758, -0.33682408883346515, -2.9544232590366239, 5.1172111917146594, 1.041889066001582, 1.1333582649278737, 0.089086761920826985, 2.7762497351949702, 1.4779048743572623, 3.2658351005961546, 3.727731028893293]),
+    Expected("/Pivots/RrSs/Rrs/RSrs", [-2.9544232590366239, 5.1172111917146594, 1.041889066001582, -0.78410209404243203, -0.52128057636917469, 0.33682408883346537, 1.1333582649278737, 0.089086761920826985, 2.7762497351949702, 2.611263139285136, 3.3549218625169814, 6.5039807640882632]),
+]
+
+pub func transforms() -> !:
+    let data = try read_file("tests/fixtures/transforms_7500_ascii.fbx")
+    defer free(data) in memory.heap
+    var document = try Document.parse(data)
+    defer document.close()
+    var scene = try Scene.of(&document)
+    defer scene.close()
+    assert(scene.settings.up.index == 2 and scene.settings.up.positive)
+    assert(scene.settings.front.index == 1 and not scene.settings.front.positive)
+    assert(scene.settings.meters == 1.0)
+    assert(scene.settings.frame_rate == 30.0)
+    var hierarchy = try scene.hierarchy()
+    defer hierarchy.close()
+    assert(hierarchy.models.count == expected.length + 1)
+    for entry in expected:
+        var found = false
+        for model in 1..<(u32)hierarchy.models.count:
+            if hierarchy.path(model) != entry.path: continue
+            found = true
+            let m = hierarchy.models.items[(usize)model].world
+            let columns: Vector3[4] = [m.x, m.y, m.z, m.translation]
+            for column in 0..<4:
+                near(columns[column].x, entry.world[column * 3])
+                near(columns[column].y, entry.world[column * 3 + 1])
+                near(columns[column].z, entry.world[column * 3 + 2])
+        assert(found)
+
+func near(value: f64, wanted: f64):
+    if math.abs(value - wanted) > 1.0e-12: print(f"transform: {value} is not {wanted}")
+    assert(math.abs(value - wanted) <= 1.0e-12)
+
+## FBX 6: the cube's model, found by name through its connection to the
+## scene root, with its material connected by name.
+pub func legacy() -> !:
+    for path in ["tests/fixtures/maya_cube_6100_ascii.fbx", "tests/fixtures/maya_cube_6100_binary.fbx"]:
+        let data = try read_file(path)
+        defer free(data) in memory.heap
+        var document = try Document.parse(data)
+        defer document.close()
+        assert(document.version == 6100)
+        var scene = try Scene.of(&document)
+        defer scene.close()
+        assert(scene.legacy)
+        var hierarchy = try scene.hierarchy()
+        defer hierarchy.close()
+        assert(hierarchy.models.count == 2)
+        assert(hierarchy.path(1) == "/pCube1")
+        assert(scene.model_kind(hierarchy.models.items[1].object) == "mesh")
+        assert(scene.settings.meters == 0.01)

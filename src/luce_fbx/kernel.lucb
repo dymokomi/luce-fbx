@@ -1,0 +1,35 @@
+## The fbx_kernel export: luce-fbx's Base internals for Base code in other
+## packages and for the package's own checks. Luce code uses `fbx`.
+import luce_fbx.errors as errors
+import luce_fbx.source as source
+import luce_fbx.document as document
+
+pub let invalid = errors.invalid
+pub let unsupported = errors.unsupported
+pub let limit = errors.limit
+
+pub let read_file = source.read
+pub let write_file = source.write
+
+pub type Document = document.Document
+pub type Node = document.Node
+pub type Property = document.Property
+pub type Encoding = document.Encoding
+pub type Element = document.Element
+pub type ArrayJob = document.ArrayJob
+pub let element_size = document.element_size
+
+import luce_fbx.scene as scene
+
+pub type Scene = scene.Scene
+pub type Object = scene.Object
+pub type Kind = scene.Kind
+pub type Connection = scene.Connection
+pub type Settings = scene.Settings
+pub type Axis = scene.Axis
+pub type Hierarchy = scene.Hierarchy
+pub type Model = scene.Model
+pub type TransformInputs = scene.TransformInputs
+pub type Trs = scene.Trs
+pub type Quat = scene.Quat
+pub let absent = scene.absent

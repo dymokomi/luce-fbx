@@ -1,0 +1,287 @@
+## The model hierarchy and its transforms, matched to ufbx (ufbxi_get_transform,
+## ufbxi_update_node):
+##
+##     local = T * Roff * Rp * Rpre * R * Rpost^-1 * Rp^-1 * Soff * Sp * S * Sp^-1
+##
+## with R in the model's RotationOrder and Rpre, Rpost in XYZ, all only when
+## RotationActive (else R alone, in XYZ). The result is always a translation,
+## a rotation and a scale. InheritType 1 (RSrs) composes normally; 0 (RrSs)
+## scales component-wise, and 2 (Rrs) ignores its parent's scale: both place
+## the child under the parent's unscaled matrix, carrying the scale the
+## child inherits apart. The geometric transform (GeometricTranslation,
+## -Rotation, -Scaling) applies to the model's own geometry only.
+
+## How a model inherits its parent's transform (ufbx's inherit modes, and
+## their numbers).
+pub enum Inherit as u8:
+    normal = 0
+    ignore_scale = 1
+    componentwise = 2
+
+pub struct Model:
+    pub var object: u32
+    ## Its parent model (0 is the root).
+    pub var parent: u32
+    pub var inherit: Inherit
+    ## The model whose scale this one inherits (componentwise and
+    ## ignore-scale modes), or absent.
+    var scale_source: u32
+    pub var trs: Trs
+    pub var world: Matrix4
+    var unscaled_world: Matrix4
+    var inherited_scale: Vector3
+    ## Geometry to model, and geometry to world.
+    pub var geometric: Matrix4
+    pub var geometry_world: Matrix4
+    pub var visible: bool
+    ## Its path ("/Parent/Child") in the hierarchy's path text.
+    pub var path_at: u32
+    pub var path_length: u32
+
+## A model's transform properties.
+pub struct TransformInputs:
+    pub var translation: Vector3 = Vector3()
+    pub var rotation: Vector3 = Vector3()
+    pub var scaling: Vector3 = Vector3(1.0, 1.0, 1.0)
+    pub var pre_rotation: Vector3 = Vector3()
+    pub var post_rotation: Vector3 = Vector3()
+    pub var rotation_offset: Vector3 = Vector3()
+    pub var rotation_pivot: Vector3 = Vector3()
+    pub var scaling_offset: Vector3 = Vector3()
+    pub var scaling_pivot: Vector3 = Vector3()
+    pub var order: i64 = 0
+    pub var rotation_space: bool = true
+    pub var geometric_translation: Vector3 = Vector3()
+    pub var geometric_rotation: Vector3 = Vector3()
+    pub var geometric_scaling: Vector3 = Vector3(1.0, 1.0, 1.0)
+    pub var visibility: f64 = 1.0
+
+pub struct Hierarchy:
+    ## Model 0 is the root; the rest in document order.
+    pub var models: Growing[Model]
+    ## Each object's model, or absent.
+    pub var model_of: Growing[u32]
+    ## Models with every parent before its children.
+    pub var order: Growing[u32]
+    pub var paths: Growing[u8]
+
+    pub mutating func close():
+        self.models.close()
+        self.model_of.close()
+        self.order.close()
+        self.paths.close()
+
+    pub func path(model: u32) -> str:
+        let found = &self.models.items[(usize)model]
+        return (str)self.paths.items[(usize)found.path_at..<(usize)(found.path_at + found.path_length)]
+
+    ## The model of `object`, if it is one.
+    pub func model(object: u32) -> u32?:
+        if (usize)object >= self.model_of.count: return none
+        let found = self.model_of.items[(usize)object]
+        if found == absent: return none
+        return found
+
+extend Scene:
+    ## The hierarchy of the scene's models, with their transforms at rest
+    ## (their properties' values).
+    pub func hierarchy() -> Hierarchy!:
+        var result = Hierarchy(Growing[Model](), Growing[u32](), Growing[u32](), Growing[u8]())
+        errdefer result.close()
+        try result.model_of.fill(self.objects.count, absent)
+        let identity = Matrix4()
+        try result.models.push(Model(object = 0, parent = 0, inherit = Inherit.normal, scale_source = absent, trs = Trs(), world = identity, unscaled_world = identity, inherited_scale = Vector3(1.0, 1.0, 1.0), geometric = identity, geometry_world = identity, visible = true, path_at = 0, path_length = 0))
+        result.model_of.items[0] = 0
+        for index in 1..<(u32)self.objects.count:
+            if self.objects.items[(usize)index].kind != Kind.model: continue
+            result.model_of.items[(usize)index] = (u32)result.models.count
+            let mode = self.integer(index, "InheritType", -1)
+            let inherit = Inherit.componentwise if mode == 0 else (Inherit.ignore_scale if mode == 2 else Inherit.normal)
+            try result.models.push(Model(object = index, parent = 0, inherit = inherit, scale_source = absent, trs = Trs(), world = identity, unscaled_world = identity, inherited_scale = Vector3(1.0, 1.0, 1.0), geometric = identity, geometry_world = identity, visible = true, path_at = 0, path_length = 0))
+        # Parents: the first model (or the root) each model connects to.
+        for model in 1..<result.models.count:
+            let object = result.models.items[model].object
+            for index in 0..<self.parent_count(object):
+                let connection = self.parent_connection(object, index)
+                if connection.property != absent: continue
+                if let parent = result.model(connection.parent):
+                    if parent != (u32)model:
+                        result.models.items[model].parent = parent
+                        break
+        try self.order_models(&result)
+        try self.name_paths(&result)
+        for model in result.order.view():
+            let inputs = self.transform_inputs(result.models.items[(usize)model].object)
+            place(&result, model, &inputs)
+        return result
+
+    ## Parents before children; fails on a cycle.
+    func order_models(result: Hierarchy*) -> !:
+        let count = result.models.count
+        var depth = Growing[u32]()
+        defer depth.close()
+        try depth.fill(count, absent)
+        depth.items[0] = 0
+        var chain = Growing[u32]()
+        defer chain.close()
+        var deepest: u32 = 0
+        for start in 1..<count:
+            if depth.items[start] != absent: continue
+            chain.clear()
+            var at = (u32)start
+            while depth.items[(usize)at] == absent:
+                if chain.count > count: error(errors.invalid, "the FBX model hierarchy has a cycle")
+                try chain.push(at)
+                at = result.models.items[(usize)at].parent
+            var level = depth.items[(usize)at]
+            var index = chain.count
+            while index > 0:
+                index -= 1
+                level += 1
+                depth.items[(usize)chain.items[index]] = level
+            if level > deepest: deepest = level
+        # Counting sort by depth, stable in model order.
+        var starts = Growing[usize]()
+        defer starts.close()
+        try starts.fill((usize)deepest + 2, 0)
+        for model in 0..<count: starts.items[(usize)depth.items[model] + 1] += 1
+        for level in 1..<starts.count: starts.items[level] += starts.items[level - 1]
+        try result.order.fill(count, 0)
+        for model in 0..<count:
+            let level = (usize)depth.items[model]
+            result.order.items[starts.items[level]] = (u32)model
+            starts.items[level] += 1
+        # The model a componentwise or ignore-scale child takes its scale
+        # from. Top-level models inherit normally (the root has no scale),
+        # as ufbx makes them.
+        for model in result.order.view():
+            if model == 0: continue
+            let entry = &result.models.items[(usize)model]
+            let parent = entry.parent
+            if parent == 0: entry.inherit = Inherit.normal
+            if entry.inherit == Inherit.componentwise: entry.scale_source = parent
+            elif entry.inherit == Inherit.ignore_scale: entry.scale_source = result.models.items[(usize)parent].scale_source
+
+    ## Paths: "/" and the names down from the root; a name repeated among
+    ## siblings takes "_2", "_3", ... in model order.
+    func name_paths(result: Hierarchy*) -> !:
+        let count = result.models.count
+        var sorted = Growing[u32]()
+        defer sorted.close()
+        for model in 1..<(u32)count: try sorted.push(model)
+        var keys = SiblingKeys(&self, result)
+        sort_indices(sorted.items[..<sorted.count], &keys, sibling_order)
+        var ordinal = Growing[u32]()
+        defer ordinal.close()
+        try ordinal.fill(count, 0)
+        for at in 1..<sorted.count:
+            let previous = sorted.items[at - 1]
+            let current = sorted.items[at]
+            if result.models.items[(usize)previous].parent == result.models.items[(usize)current].parent and self.name(result.models.items[(usize)previous].object) == self.name(result.models.items[(usize)current].object):
+                ordinal.items[(usize)current] = ordinal.items[(usize)previous] + 1
+        for model in result.order.view():
+            if model == 0: continue
+            let entry = result.models.items[(usize)model]
+            let parent = result.models.items[(usize)entry.parent]
+            let start = result.paths.count
+            for at in (usize)parent.path_at..<(usize)(parent.path_at + parent.path_length): try result.paths.push(result.paths.items[at])
+            try result.paths.push('/')
+            for byte in self.name(entry.object).bytes: try result.paths.push(byte)
+            let repeat = ordinal.items[(usize)model]
+            if repeat > 0:
+                var digits: u8[12] = ---
+                let text = try format(digits, f"_{repeat + 1}")
+                for byte in text.bytes: try result.paths.push(byte)
+            result.models.items[(usize)model].path_at = (u32)start
+            result.models.items[(usize)model].path_length = (u32)(result.paths.count - start)
+
+    ## A model object's transform properties at rest.
+    pub func transform_inputs(object: u32) -> TransformInputs:
+        var inputs = TransformInputs()
+        inputs.translation = self.vector(object, "Lcl Translation", inputs.translation)
+        inputs.rotation = self.vector(object, "Lcl Rotation", inputs.rotation)
+        inputs.scaling = self.vector(object, "Lcl Scaling", inputs.scaling)
+        inputs.pre_rotation = self.vector(object, "PreRotation", inputs.pre_rotation)
+        inputs.post_rotation = self.vector(object, "PostRotation", inputs.post_rotation)
+        inputs.rotation_offset = self.vector(object, "RotationOffset", inputs.rotation_offset)
+        inputs.rotation_pivot = self.vector(object, "RotationPivot", inputs.rotation_pivot)
+        inputs.scaling_offset = self.vector(object, "ScalingOffset", inputs.scaling_offset)
+        inputs.scaling_pivot = self.vector(object, "ScalingPivot", inputs.scaling_pivot)
+        inputs.order = self.integer(object, "RotationOrder", 0)
+        let active = self.integer(object, "RotationActive", 1) != 0
+        let limit_only = self.integer(object, "RotationSpaceForLimitOnly", 0) != 0
+        inputs.rotation_space = active and not limit_only
+        inputs.geometric_translation = self.vector(object, "GeometricTranslation", inputs.geometric_translation)
+        inputs.geometric_rotation = self.vector(object, "GeometricRotation", inputs.geometric_rotation)
+        inputs.geometric_scaling = self.vector(object, "GeometricScaling", inputs.geometric_scaling)
+        inputs.visibility = self.number(object, "Visibility", 1.0)
+        return inputs
+
+## The local transform of `inputs` (ufbxi_get_transform).
+pub func local_transform(inputs: const TransformInputs*) -> Trs:
+    var t = Trs()
+    t.moved(negated(inputs.scaling_pivot))
+    t.scaled(inputs.scaling)
+    t.moved(inputs.scaling_pivot)
+    t.moved(inputs.scaling_offset)
+    t.moved(negated(inputs.rotation_pivot))
+    if inputs.rotation_space:
+        t.rotated(euler(inputs.post_rotation, 0).inverse())
+        t.rotated(euler(inputs.rotation, inputs.order))
+        t.rotated(euler(inputs.pre_rotation, 0))
+    else:
+        t.rotated(euler(inputs.rotation, 0))
+    t.moved(inputs.rotation_pivot)
+    t.moved(inputs.rotation_offset)
+    t.moved(inputs.translation)
+    return t
+
+## The geometric transform of `inputs` (ufbxi_get_geometry_transform).
+pub func geometric_transform(inputs: const TransformInputs*) -> Trs:
+    var t = Trs()
+    t.scaled(inputs.geometric_scaling)
+    t.rotated(euler(inputs.geometric_rotation, 0))
+    t.moved(inputs.geometric_translation)
+    return t
+
+## Place `model` under its (already placed) parent (ufbxi_update_node).
+pub func place(result: Hierarchy*, model: u32, inputs: const TransformInputs*):
+    if model == 0: return
+    let own = local_transform(inputs)
+    let parent = result.models.items[(usize)result.models.items[(usize)model].parent]
+    let entry = &result.models.items[(usize)model]
+    entry.trs = own
+    entry.visible = inputs.visibility != 0.0
+    if entry.inherit == Inherit.normal:
+        entry.world = parent.world.multiply(own.matrix())
+        entry.unscaled_world = parent.world.multiply(own.unscaled())
+        entry.inherited_scale = own.scale
+    else:
+        var parent_scale = Vector3(1.0, 1.0, 1.0)
+        if entry.scale_source != absent: parent_scale = result.models.items[(usize)entry.scale_source].inherited_scale
+        var t = own
+        t.scale = Vector3(t.scale.x * parent_scale.x, t.scale.y * parent_scale.y, t.scale.z * parent_scale.z)
+        t.translation = Vector3(t.translation.x * parent.inherited_scale.x, t.translation.y * parent.inherited_scale.y, t.translation.z * parent.inherited_scale.z)
+        entry.inherited_scale = t.scale
+        entry.world = parent.unscaled_world.multiply(t.matrix())
+        entry.unscaled_world = parent.unscaled_world.multiply(t.unscaled())
+    let geometric = geometric_transform(inputs)
+    entry.geometric = geometric.matrix()
+    entry.geometry_world = entry.world.multiply(entry.geometric) if not geometric.is_identity() else entry.world
+
+func negated(v: Vector3) -> Vector3:
+    return Vector3(-v.x, -v.y, -v.z)
+
+## Sorting models by (parent, name, model).
+struct SiblingKeys:
+    var scene: const Scene*
+    var hierarchy: const Hierarchy*
+
+func sibling_order(keys: const SiblingKeys*, a: u32, b: u32) -> i64:
+    let x = &keys.hierarchy.models.items[(usize)a]
+    let y = &keys.hierarchy.models.items[(usize)b]
+    if x.parent != y.parent: return -1 if x.parent < y.parent else 1
+    let order = compare_bytes(keys.scene.name(x.object).bytes, keys.scene.name(y.object).bytes)
+    if order != 0: return order
+    return (i64)a - (i64)b
+

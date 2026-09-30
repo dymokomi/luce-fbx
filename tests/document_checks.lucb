@@ -1,0 +1,117 @@
+## The document layer: binary 6.1/7.4/7.5 (little- and big-endian, zlib and
+## raw arrays, zero-end records), ASCII 6.1/7.5; the same scene in different
+## encodings decodes to the same arrays; every truncation and a sweep of
+## byte corruptions fail cleanly (an error, never a trap or a leak).
+import memory
+from fbx_kernel import Document, ArrayJob, Element, Scene, read_file, invalid
+from geocore_growing import Growing
+
+## The fixtures every check reads.
+let files: str[8] = [
+    "tests/fixtures/blender_279_default_7400_binary.fbx",
+    "tests/fixtures/maya_cube_7400_binary.fbx",
+    "tests/fixtures/maya_cube_big_endian_7400_binary.fbx",
+    "tests/fixtures/maya_zero_end_7400_binary.fbx",
+    "tests/fixtures/maya_cube_6100_binary.fbx",
+    "tests/fixtures/maya_cube_6100_ascii.fbx",
+    "tests/fixtures/maya_cube_7500_ascii.fbx",
+    "tests/fixtures/transforms_7500_ascii.fbx",
+]
+
+## Every fixture parses, and every array in it decodes.
+pub func fixtures() -> !:
+    for path in files:
+        let data = try read_file(path)
+        defer free(data) in memory.heap
+        var document = try Document.parse(data)
+        defer document.close()
+        assert(document.nodes.count > 10)
+        discard(try decode_everything(&document))
+
+## Decode every array of `document` as f64; the total element count.
+func decode_everything(document: const Document*) -> usize!:
+    var jobs = Growing[ArrayJob]()
+    defer:
+        for job in jobs.view(): free(job.out) in memory.heap
+        jobs.close()
+    var total: usize = 0
+    for node in 0..<(u32)document.nodes.count:
+        if document.array_property(node) == none: continue
+        let count = document.array_count(node)
+        let out = try alloc u8[count * 8] in memory.heap
+        jobs.push(ArrayJob(node, Element.real64, out)) catch failure:
+            free(out) in memory.heap
+            error(failure.code, failure.message)
+        total += count
+    try document.decode_arrays(jobs.view())
+    return total
+
+## The cube's vertices in each encoding: FBX 7.4 binary (little- and
+## big-endian, zero-end records) and FBX 6.1 binary and ASCII.
+pub func equivalent_encodings() -> !:
+    let reference = try cube_vertices("tests/fixtures/maya_cube_7400_binary.fbx")
+    defer free(reference) in memory.heap
+    assert(reference.length == 24)
+    for path in files[2..<6]:
+        let other = try cube_vertices(path)
+        defer free(other) in memory.heap
+        assert(other.length == reference.length)
+        for index in 0..<other.length: assert(other[index] == reference[index])
+
+## The first Vertices array of a file (a Geometry's, or an FBX 6 Model's).
+func cube_vertices(path: str) -> f64[]!:
+    let data = try read_file(path)
+    defer free(data) in memory.heap
+    var document = try Document.parse(data)
+    defer document.close()
+    for node in 0..<(u32)document.nodes.count:
+        if document.name(node) == "Vertices": return try document.decoded[f64](node, Element.real64)
+    error(invalid, "no Vertices")
+
+## Every prefix of a binary and an ASCII file parses or fails cleanly.
+pub func truncations() -> !:
+    for path in ["tests/fixtures/maya_cube_7400_binary.fbx", "tests/fixtures/maya_cube_7500_ascii.fbx"]:
+        let data = try read_file(path)
+        defer free(data) in memory.heap
+        var parsed: usize = 0
+        for length in 0..<data.length:
+            if try survives(data[..<length]): parsed += 1
+        # Only prefixes past the last node's end can still parse.
+        assert(parsed < data.length // 10)
+
+## Flipping bytes of the first kilobytes of each file fails or parses
+## cleanly, through the scene and its hierarchy.
+pub func corruptions() -> !:
+    for path in files:
+        let data = try read_file(path)
+        defer free(data) in memory.heap
+        let copy = try alloc u8[data.length] in memory.heap
+        defer free(copy) in memory.heap
+        let span = 4096 if data.length > 4096 else data.length
+        var at: usize = 0
+        while at < span:
+            memory.copy(copy, data, data.length)
+            copy[at] = copy[at] ^ 0xA5
+            discard(try survives(copy))
+            at += 3
+
+## Parse, decode, and build the scene and hierarchy of `data`: whether it
+## parsed. Only running out of memory may escape.
+func survives(data: const u8[]) -> bool!:
+    var document = Document.parse(data) catch failure:
+        if failure.code == memory.exhausted: error(failure.code, failure.message)
+        return false
+    defer document.close()
+    let decoded = decode_everything(&document) catch failure:
+        if failure.code == memory.exhausted: error(failure.code, failure.message)
+        recover 0
+    discard(decoded)
+    var scene = Scene.of(&document) catch failure:
+        if failure.code == memory.exhausted: error(failure.code, failure.message)
+        return true
+    defer scene.close()
+    var hierarchy = scene.hierarchy() catch failure:
+        if failure.code == memory.exhausted: error(failure.code, failure.message)
+        return true
+    hierarchy.close()
+    return true

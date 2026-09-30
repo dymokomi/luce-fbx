@@ -1,0 +1,88 @@
+## luce-fbx's Base gate: every module check in turn, under a heap that counts
+## live blocks, so each check must free everything it allocated. `inject`
+## fails a check's allocations one at a time: every failure must surface as
+## memory.exhausted and leave nothing allocated.
+import memory
+import sync
+import geocore_parallel
+import document_checks
+import scene_checks
+
+## Counts live blocks and fails the allocation after `remaining` more.
+struct Tracker: memory.Allocator:
+    var upstream: memory.Allocator
+    var live: usize
+    var remaining: usize?
+    var lock: sync.Mutex
+
+    pub mutating func allocate(size: usize, alignment: usize) -> u8[]?:
+        if size == 0: return self.upstream.allocate(size, alignment)
+        self.lock.lock()
+        defer self.lock.unlock()
+        if let remaining = self.remaining:
+            if remaining == 0: return none
+            self.remaining = remaining - 1
+        let block = self.upstream.allocate(size, alignment) else return none
+        self.live += 1
+        return block
+
+    pub mutating func resize(block: u8[], size: usize) -> bool:
+        return self.upstream.resize(block, size)
+
+    pub mutating func release(block: u8[]):
+        if block.length == 0: return
+        self.lock.lock()
+        defer self.lock.unlock()
+        assert(self.live > 0)
+        self.live -= 1
+        self.upstream.release(block)
+
+## Stages enough to fail every allocation of any check here.
+let every: usize = 1000000
+
+func restore(previous: memory.Allocator):
+    memory.heap = previous
+
+## Nothing may stay live after a check.
+func settle(tracker: Tracker*, what: str):
+    tracker.remaining = none
+    if tracker.live != 0: print(f"{tracker.live} blocks still live after {what}")
+    assert(tracker.live == 0)
+
+## Fail each allocation of `check` in turn, until it runs through.
+func inject(tracker: Tracker*, check: func() -> unit!, what: str):
+    for stage in 0..<every:
+        tracker.remaining = stage
+        var failed = false
+        check() catch failure:
+            if failure.code != memory.exhausted: print(f"{what}: allocation {stage} failing gave: {failure.message}")
+            assert(failure.code == memory.exhausted)
+            failed = true
+        if tracker.live != 0: print(f"{what}: allocation {stage} failing leaks")
+        settle(tracker, what)
+        if not failed: return
+
+pub func main(arguments: str[]) -> i32!:
+    # Start the pool first: its starting threads free blocks in the current heap.
+    geocore_parallel.warm()
+    let previous = memory.heap
+    var tracker = Tracker(previous, 0, none, sync.Mutex())
+    memory.heap = &tracker
+    defer restore(previous)
+    try document_checks.fixtures()
+    settle(&tracker, "document fixtures")
+    try document_checks.equivalent_encodings()
+    settle(&tracker, "equivalent encodings")
+    try document_checks.truncations()
+    settle(&tracker, "truncations")
+    try document_checks.corruptions()
+    settle(&tracker, "corruptions")
+    inject(&tracker, document_checks.fixtures, "document fixtures")
+    try scene_checks.transforms()
+    settle(&tracker, "transforms")
+    try scene_checks.legacy()
+    settle(&tracker, "legacy scenes")
+    inject(&tracker, scene_checks.transforms, "transforms")
+    inject(&tracker, scene_checks.legacy, "legacy scenes")
+    print("PASS luce-fbx Base checks")
+    return 0

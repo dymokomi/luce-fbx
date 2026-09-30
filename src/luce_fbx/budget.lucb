@@ -1,0 +1,59 @@
+## Memory safety for sizes that come from the file. There is no fixed cap on
+## file or array sizes: every declared size is checked against what the bytes
+## that hold it can decode to before anything is allocated, and what a whole
+## load will hold is checked against the machine's physical memory, so a
+## hostile header fails with a clear error instead of an allocation storm.
+import os
+import luce_fbx.errors as errors
+
+extern func sysconf(option: i32) -> i64
+extern func getpagesize() -> i32
+extern func GlobalMemoryStatusEx(status: MemoryStatus*) -> i32
+
+## MEMORYSTATUSEX.
+extern struct MemoryStatus:
+    length: u32
+    load: u32
+    total_physical: u64
+    available_physical: u64
+    total_page_file: u64
+    available_page_file: u64
+    total_virtual: u64
+    available_virtual: u64
+    available_extended: u64
+
+## `_SC_PHYS_PAGES`: 200 on macOS, 85 on Linux.
+let physical_pages: i32 = 200 if os.macos else 85
+## Assumed when the system does not answer.
+let fallback_bytes: u64 = 4294967296
+
+## The largest output a zlib stream of `size` bytes can inflate to: DEFLATE
+## codes at best 258 bytes in two bits (1032:1), and the stream carries 6
+## bytes of header and checksum.
+pub func inflated_bound(size: u64) -> u64:
+    return size * 1032 + 1032
+
+## Bytes of physical memory on this machine.
+pub func physical_memory() -> u64:
+    if os.windows:
+        var status: MemoryStatus = ---
+        status.length = 64
+        if GlobalMemoryStatusEx(&status) == 0: return fallback_bytes
+        return status.total_physical
+    let pages = sysconf(physical_pages)
+    let size = getpagesize()
+    if pages <= 0 or size <= 0: return fallback_bytes
+    return (u64)pages * (u64)size
+
+## Fail unless `amount` bytes fit in physical memory.
+pub func require(amount: u64) -> !:
+    if amount > physical_memory():
+        error(errors.limit, "the FBX load needs more memory than this machine has")
+
+## `a * b`, failing instead of wrapping.
+pub func product(a: u64, b: u64) -> u64!:
+    return a *? b else error(errors.limit, "an FBX size overflows")
+
+## `a + b`, failing instead of wrapping.
+pub func sum(a: u64, b: u64) -> u64!:
+    return a +? b else error(errors.limit, "an FBX size overflows")

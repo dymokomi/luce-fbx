@@ -1,0 +1,88 @@
+## GlobalSettings: the file's axis system, unit and time base, read as ufbx
+## reads them (ufbxi_update_scene_settings).
+
+## An axis: 0..2 for X, Y, Z, and its sign.
+pub struct Axis:
+    pub var index: u8
+    pub var positive: bool
+
+    ## "+X", "-Z" and so on.
+    pub func text() -> str:
+        let names: str[6] = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
+        return names[(usize)self.index * 2 + (0 if self.positive else 1)]
+
+pub struct Settings:
+    pub var up: Axis = Axis(1, true)
+    pub var front: Axis = Axis(2, true)
+    pub var right: Axis = Axis(0, true)
+    ## Meters per file unit (UnitScaleFactor is centimeters per unit).
+    pub var meters: f64 = 0.01
+    pub var original_meters: f64 = 0.01
+    pub var frame_rate: f64 = 24.0
+    ## The time span, in seconds.
+    pub var start: f64 = 0.0
+    pub var stop: f64 = 0.0
+
+## Frames per second of each TimeMode (FbxTime::EMode).
+let mode_rates: f64[18] = [30.0, 120.0, 100.0, 60.0, 50.0, 48.0, 30.0, 30.0, 29.97, 29.97, 25.0, 24.0, 1000.0, 23.976, 24.0, 96.0, 72.0, 59.94]
+## The TimeMode of a custom rate.
+let custom_mode: i64 = 14
+## KTime ticks per second.
+pub let ticks_per_second: f64 = 46186158000.0
+
+extend Scene:
+    mutating func read_settings() -> !:
+        var settings = Settings()
+        settings.up = self.axis("UpAxis", "UpAxisSign", settings.up)
+        settings.front = self.axis("FrontAxis", "FrontAxisSign", settings.front)
+        settings.right = self.axis("CoordAxis", "CoordAxisSign", settings.right)
+        let scale = self.setting_number("UnitScaleFactor", 1.0)
+        settings.meters = near_power_of_ten(scale * 0.01)
+        settings.original_meters = near_power_of_ten(self.setting_number("OriginalUnitScaleFactor", scale) * 0.01)
+        settings.frame_rate = self.setting_number("CustomFrameRate", 24.0)
+        var mode: i64 = 11
+        if let found = self.setting("TimeMode"):
+            mode = self.document.integer(found.node, found.first_value) else 11
+        if mode >= 0 and mode < 18 and mode != custom_mode: settings.frame_rate = mode_rates[(usize)mode]
+        if self.setting("TimeMode") == none:
+            if let rate = self.legacy_frame_rate(): settings.frame_rate = rate
+        settings.start = self.setting_number("TimeSpanStart", 0.0) / ticks_per_second
+        settings.stop = self.setting_number("TimeSpanStop", 0.0) / ticks_per_second
+        self.settings = settings
+
+    ## FBX 6 and older: the frame rate of the `Settings` node (`FrameRate:
+    ## "30"`), under Version5 or at the top.
+    func legacy_frame_rate() -> f64?:
+        let source = self.document
+        var settings = source.child(0, "Settings")
+        if let version = source.child(0, "Version5"): settings = source.child(version, "Settings")
+        let node = settings else return none
+        let rate = source.child(node, "FrameRate") else return none
+        let found = source.property(rate, 0) else return none
+        var value: f64 = 0.0
+        if found.kind == 'S':
+            value = document.parse_real(source.data[found.offset..<found.offset + found.size]) else 0.0
+        else:
+            value = document.scalar_real(found) else 0.0
+        if value > 0.0: return value
+        return none
+
+    func axis(name: str, sign_name: str, fallback: Axis) -> Axis:
+        let found = self.setting(name) else return fallback
+        let index = self.document.integer(found.node, found.first_value) else return fallback
+        if index < 0 or index > 2: return fallback
+        var positive = true
+        if let sign = self.setting(sign_name):
+            positive = (self.document.integer(sign.node, sign.first_value) else 1) > 0
+        return Axis((u8)index, positive)
+
+## A value within f32 rounding of a power of ten, snapped to it (ufbx's
+## ufbxi_round_if_near: 2.54 cm-based files keep their value).
+func near_power_of_ten(value: f64) -> f64:
+    var target: f64 = 1.0e-9
+    for _ in 0..<19:
+        var slack = target * 9.5367431640625e-7
+        if slack < 0.0: slack = -slack
+        if value >= target - slack and value <= target + slack: return target
+        target *= 10.0
+    return value

@@ -1,0 +1,176 @@
+## The binary FBX reader: one pass over the node records, depth first, with
+## an explicit stack of open nodes. Every record's offsets and every
+## property's size are checked against the bytes that hold them; arrays are
+## only recorded (their header checked: a raw array's bytes must be present,
+## a zlib array's declared length must fit what its stream can inflate to).
+##
+## Layout (ufbx, Blender's parse_fbx.py): a 27-byte header ("Kaydara FBX
+## Binary  \0", 0x1A, an endianness byte (0 little, else big), the u32
+## version), then node records. A record is its end offset, property count
+## and property bytes (u32 each before 7500, u64 from 7500), a u8 name
+## length and the name, the properties, then its children ended by a null
+## record (a zero end offset and name length). The top level ends with a
+## null record too; the footer after it is not read. As in ufbx, a named
+## record with a zero end offset has no children and ends after its
+## properties, and bytes left after the properties are skipped.
+
+## The header's length: where the first record starts.
+let header_bytes: usize = 27
+
+extend Document:
+    mutating func parse_binary() -> !:
+        let data = self.data
+        self.binary = true
+        self.big = data[22] != 0
+        self.version = (u32)try number(data, 23, 4, self.big)
+        if self.version < 6000: error(errors.unsupported, "binary FBX before version 6.0 is not supported")
+        if self.version >= 8000: error(errors.unsupported, "binary FBX 8 and later is not supported")
+        let wide = self.version >= 7500
+        # The root spans the whole record area.
+        try self.nodes.push(Node(name_at = 0, name_length = 0, first_property = 0, property_count = 0, end = 0))
+        var ends = Growing[usize]()
+        defer ends.close()
+        var parents = Growing[u32]()
+        defer parents.close()
+        var at = header_bytes
+        var limit = data.length
+        while true:
+            # A null record, or the end of the enclosing node, closes it.
+            let record = try read_record(data, at, limit, wide, self.big)
+            if record.null or at == limit:
+                if parents.count == 0: break
+                at = ends.items[ends.count - 1]
+                parents.count -= 1
+                ends.count -= 1
+                let closed = parents.items[parents.count]
+                self.nodes.items[(usize)closed].end = (u32)self.nodes.count
+                limit = ends.items[ends.count - 1] if ends.count > 0 else data.length
+                continue
+            if parents.count >= most_depth: error(errors.invalid, "binary FBX nodes are nested too deeply")
+            let index = (u32)self.nodes.count
+            let first = (u32)self.properties.count
+            let children = try self.read_properties(record)
+            try self.nodes.push(Node(name_at = record.name_at, name_length = (u32)record.name_length, first_property = first, property_count = (u32)(self.properties.count - (usize)first), end = index + 1))
+            if children < record.end:
+                # It has children: descend.
+                try parents.push(index)
+                try ends.push(record.end)
+                at = children
+                limit = record.end
+            else:
+                at = record.end
+        self.nodes.items[0].end = (u32)self.nodes.count
+
+    ## Record the properties of `record`; where its children start.
+    mutating func read_properties(record: Record) -> usize!:
+        let data = self.data
+        let big = self.big
+        var at = record.properties
+        let end = record.properties + record.property_bytes
+        for _ in 0..<record.property_count:
+            if at >= end: error(errors.invalid, "a binary FBX property runs past its node")
+            let kind = data[at]
+            at += 1
+            var property = Property(kind = kind, encoding = Encoding.raw, count = 0, offset = at, size = 0, integer = 0, real = 0.0)
+            match kind:
+                'C', 'B', 'Z':
+                    # 'B' and 'Z' are one byte too (ufbx).
+                    property.kind = 'C'
+                    property.integer = (i64)try number(data[..<end], at, 1, big)
+                    at += 1
+                'Y':
+                    property.integer = (i64)(i16)(u16)try number(data[..<end], at, 2, big)
+                    at += 2
+                'I':
+                    property.integer = (i64)(i32)(u32)try number(data[..<end], at, 4, big)
+                    at += 4
+                'L':
+                    property.integer = (i64)try number(data[..<end], at, 8, big)
+                    at += 8
+                'F':
+                    property.real = (f64)f32.bits((u32)try number(data[..<end], at, 4, big))
+                    at += 4
+                'D':
+                    property.real = f64.bits(try number(data[..<end], at, 8, big))
+                    at += 8
+                'S', 'R':
+                    let length = (usize)try number(data[..<end], at, 4, big)
+                    at += 4
+                    if length > end - at: error(errors.invalid, "a binary FBX string runs past its node")
+                    property.offset = at
+                    property.size = length
+                    property.count = length
+                    at += length
+                'b', 'c', 'i', 'l', 'f', 'd':
+                    # 'c' is a byte array, as 'b' (ufbx).
+                    property.kind = 'b' if kind == 'c' else kind
+                    let count = try number(data[..<end], at, 4, big)
+                    let encoding = try number(data[..<end], at + 4, 4, big)
+                    let size = (usize)try number(data[..<end], at + 8, 4, big)
+                    at += 12
+                    if size > end - at: error(errors.invalid, "a binary FBX array runs past its node")
+                    let decoded = count * (u64)element_bytes(kind)
+                    if encoding == 0:
+                        if decoded != (u64)size: error(errors.invalid, "a binary FBX array's length does not match its bytes")
+                        property.encoding = Encoding.raw
+                    elif encoding == 1:
+                        if decoded > budget.inflated_bound((u64)size): error(errors.invalid, "a binary FBX array is longer than its compressed data can hold")
+                        property.encoding = Encoding.zlib
+                    else:
+                        error(errors.unsupported, "a binary FBX array has an unknown encoding")
+                    property.count = (usize)count
+                    property.offset = at
+                    property.size = size
+                    at += size
+                _: error(errors.invalid, "a binary FBX property has an unknown type")
+            try self.properties.push(property)
+        return end
+
+## A node record's header.
+struct Record:
+    var null: bool
+    var end: usize
+    var property_count: u64
+    var property_bytes: usize
+    var name_at: usize
+    var name_length: usize
+    var properties: usize
+
+## The record at data[at], which must end by `limit`.
+func read_record(data: const u8[], at: usize, limit: usize, wide: bool, big: bool) -> Record!:
+    var none_record = Record(null = true, end = at, property_count = 0, property_bytes = 0, name_at = at, name_length = 0, properties = at)
+    if at == limit: return none_record
+    let width: usize = 8 if wide else 4
+    var end = try number(data[..<limit], at, width, big)
+    let count = try number(data[..<limit], at + width, width, big)
+    let bytes = try number(data[..<limit], at + width * 2, width, big)
+    let length = (usize)try number(data[..<limit], at + width * 3, 1, big)
+    if end == 0 and length == 0:
+        none_record.end = at + width * 3 + 1
+        return none_record
+    let name_at = at + width * 3 + 1
+    let properties = name_at + length
+    # A zero end offset: no children, the record ends after its properties.
+    if end == 0: end = (u64)properties +? bytes else error(errors.invalid, "a binary FBX node's offsets are invalid")
+    if end > (u64)limit or end < (u64)properties or bytes > end - (u64)properties:
+        error(errors.invalid, "a binary FBX node's offsets are invalid")
+    if count > bytes: error(errors.invalid, "a binary FBX node has more properties than bytes")
+    return Record(null = false, end = (usize)end, property_count = count, property_bytes = (usize)bytes, name_at = name_at, name_length = length, properties = properties)
+
+## An unsigned integer of `width` bytes at data[at], little-endian unless
+## `big`.
+pub func number(data: const u8[], at: usize, width: usize, big: bool) -> u64!:
+    if at > data.length or width > data.length - at: error(errors.invalid, "a binary FBX file is truncated")
+    var result: u64 = 0
+    for index in 0..<width:
+        let byte = data[at + width - 1 - index] if big else data[at + index]
+        result |= (u64)byte << (u64)(index * 8)
+    return result
+
+## Bytes per element of a binary array type.
+pub func element_bytes(kind: u8) -> usize:
+    match kind:
+        'b': return 1
+        'i', 'f': return 4
+        'l', 'd': return 8
+        _: return 0

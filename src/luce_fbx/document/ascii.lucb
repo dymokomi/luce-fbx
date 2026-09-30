@@ -1,0 +1,272 @@
+## The ASCII FBX reader: the same node tree as the binary reader, from text.
+##
+##     ; a comment
+##     Name: value, value, ... {
+##         Child: "text", 1.5, T
+##         Array: *3 {
+##             a: 1,2,3
+##         }
+##     }
+##
+## Values are numbers, quoted strings and bare words (T, Y, W). A `*N { a:
+## ... }` value is an array: its text is recorded, and its numbers are parsed
+## only when the converter decodes it. FBX 6 writes arrays as plain value
+## lists (`Vertices: 1,2,3,...` over many lines); a list of more than
+## `most_scalars` numbers becomes one array the same way. A value list ends
+## at a value not followed by a comma, so a new line starting `Name:` is the
+## next node.
+
+## Value lists of numbers longer than this become one array property.
+let most_scalars: usize = 16
+
+extend Document:
+    mutating func parse_ascii() -> !:
+        self.binary = false
+        var text = Scanner(self.data, 0)
+        # A UTF-8 byte order mark.
+        if self.data.length >= 3 and self.data[0] == 0xEF and self.data[1] == 0xBB and self.data[2] == 0xBF: text.at = 3
+        try self.nodes.push(Node(name_at = 0, name_length = 0, first_property = 0, property_count = 0, end = 0))
+        var parents = Growing[u32]()
+        defer parents.close()
+        while true:
+            text.skip_space()
+            if text.done():
+                if parents.count > 0: error(errors.invalid, "an ASCII FBX node is not closed")
+                break
+            if text.peek() == '}':
+                if parents.count == 0: error(errors.invalid, "an ASCII FBX file closes a node it never opened")
+                text.at += 1
+                parents.count -= 1
+                self.nodes.items[(usize)parents.items[parents.count]].end = (u32)self.nodes.count
+                continue
+            let name = text.word() else error(errors.invalid, "an ASCII FBX node has no name")
+            text.skip_space()
+            if text.done() or text.peek() != ':': error(errors.invalid, "an ASCII FBX node name is not followed by ':'")
+            text.at += 1
+            if parents.count >= most_depth: error(errors.invalid, "ASCII FBX nodes are nested too deeply")
+            let index = (u32)self.nodes.count
+            let first = self.properties.count
+            try self.read_values(&text)
+            try self.nodes.push(Node(name_at = name.0, name_length = (u32)(name.1 - name.0), first_property = (u32)first, property_count = (u32)(self.properties.count - first), end = index + 1))
+            text.skip_space()
+            if not text.done() and text.peek() == '{':
+                text.at += 1
+                try parents.push(index)
+        self.nodes.items[0].end = (u32)self.nodes.count
+        self.version = try self.ascii_version()
+
+    ## The value list after `Name:`, up to (not including) a `{` or the
+    ## next node.
+    mutating func read_values(text: Scanner*) -> !:
+        let first = self.properties.count
+        var numbers_only = true
+        while true:
+            text.skip_space()
+            if text.done(): break
+            let byte = text.peek()
+            if byte == '{' or byte == '}': break
+            if byte == ',':
+                # An empty value (`Content: , "..."`).
+                text.at += 1
+                continue
+            if byte == '"':
+                let start = text.at + 1
+                let end = text.find('"', start) else error(errors.invalid, "an ASCII FBX string is not closed")
+                try self.properties.push(Property(kind = 'S', encoding = Encoding.raw, count = end - start, offset = start, size = end - start, integer = 0, real = 0.0))
+                text.at = end + 1
+                numbers_only = false
+            elif byte == '*':
+                text.at += 1
+                try self.read_array(text)
+                numbers_only = false
+            elif is_number_start(byte):
+                let start = text.at
+                text.skip_number()
+                try self.properties.push(Property(kind = 'N', encoding = Encoding.text, count = 0, offset = start, size = text.at - start, integer = 0, real = 0.0))
+            else:
+                # A bare word, unless it names the next node.
+                let mark = text.at
+                let word = text.word() else error(errors.invalid, "an ASCII FBX value is not understood")
+                text.skip_space()
+                if not text.done() and text.peek() == ':':
+                    text.at = mark
+                    break
+                if is_special_number(self.data[word.0..<word.1]):
+                    # inf, nan(ind) and the like are numbers.
+                    text.at = word.0
+                    text.skip_number()
+                    try self.properties.push(Property(kind = 'N', encoding = Encoding.text, count = 0, offset = word.0, size = text.at - word.0, integer = 0, real = 0.0))
+                else:
+                    try self.properties.push(Property(kind = 'S', encoding = Encoding.raw, count = word.1 - word.0, offset = word.0, size = word.1 - word.0, integer = 0, real = 0.0))
+                    numbers_only = false
+            text.skip_space()
+            if text.done() or text.peek() != ',': break
+            text.at += 1
+        let count = self.properties.count - first
+        if numbers_only and count > most_scalars:
+            # A long run of numbers is an array over their text.
+            let start = self.properties.items[first].offset
+            let last = &self.properties.items[self.properties.count - 1]
+            let end = last.offset + last.size
+            self.properties.count = first
+            try self.properties.push(Property(kind = 'a', encoding = Encoding.text, count = count, offset = start, size = end - start, integer = 0, real = 0.0))
+            return
+        for at in first..<self.properties.count:
+            let found = &self.properties.items[at]
+            if found.kind == 'N':
+                let token = self.data[found.offset..<found.offset + found.size]
+                let real = try parse_real(token)
+                found.real = real
+                found.integer = parse_integer(token) else (i64)real
+
+    ## An array value after its `*`: `N { a: v, v, ... }`.
+    mutating func read_array(text: Scanner*) -> !:
+        let start = text.at
+        text.skip_number()
+        let count = parse_integer(self.data[start..<text.at]) else error(errors.invalid, "an ASCII FBX array count is not an integer")
+        if count < 0: error(errors.invalid, "an ASCII FBX array count is negative")
+        text.skip_space()
+        if text.done() or text.peek() != '{': error(errors.invalid, "an ASCII FBX array has no '{'")
+        text.at += 1
+        text.skip_space()
+        var body = text.at
+        var end = text.at
+        if not text.done() and text.peek() != '}':
+            let word = text.word() else error(errors.invalid, "an ASCII FBX array has no 'a:'")
+            if (str)self.data[word.0..<word.1] != "a": error(errors.invalid, "an ASCII FBX array has no 'a:'")
+            text.skip_space()
+            if text.done() or text.peek() != ':': error(errors.invalid, "an ASCII FBX array has no 'a:'")
+            body = text.at + 1
+            end = text.find('}', body) else error(errors.invalid, "an ASCII FBX array is not closed")
+        else:
+            end = text.at
+        # Each number takes a byte and each separator another.
+        if (u64)count > (u64)(end - body) // 2 + 1: error(errors.invalid, "an ASCII FBX array holds fewer numbers than it declares")
+        try self.properties.push(Property(kind = 'a', encoding = Encoding.text, count = (usize)count, offset = body, size = end - body, integer = 0, real = 0.0))
+        text.at = end + 1
+
+    ## The version the header extension names (FBXVersion), else the one
+    ## the first comment names ("; FBX 6.1.0 project file"), else 7400.
+    func ascii_version() -> u32!:
+        if let header = self.child(0, "FBXHeaderExtension"):
+            if let version = self.child(header, "FBXVersion"):
+                let value = try self.integer(version, 0)
+                if value > 0 and value < 100000: return (u32)value
+        var text = Scanner(self.data, 0)
+        let marker = text.find_text("; FBX ") else return 7400
+        var at = marker + 6
+        var digits: u32 = 0
+        var count: u32 = 0
+        while at < self.data.length and count < 3:
+            let byte = self.data[at]
+            if byte >= '0' and byte <= '9':
+                digits = digits * 10 + (u32)(byte - '0')
+                count += 1
+            elif byte != '.':
+                break
+            at += 1
+        if count != 3: return 7400
+        return digits * 100
+
+## A cursor over the text.
+struct Scanner:
+    var data: const u8[]
+    var at: usize
+
+    func done() -> bool:
+        return self.at >= self.data.length
+
+    func peek() -> u8:
+        return self.data[self.at]
+
+    ## Past spaces, line ends and `;` comments.
+    mutating func skip_space():
+        while self.at < self.data.length:
+            let byte = self.data[self.at]
+            if byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r':
+                self.at += 1
+            elif byte == ';':
+                while self.at < self.data.length and self.data[self.at] != '\n': self.at += 1
+            else:
+                return
+
+    ## A name or bare word ([A-Za-z0-9_|.-]+): its start and end.
+    mutating func word() -> (usize, usize)?:
+        let start = self.at
+        while self.at < self.data.length and is_word(self.data[self.at]): self.at += 1
+        if self.at == start: return none
+        return (start, self.at)
+
+    ## Past a number's characters (sign, digits, point, exponent, and the
+    ## letters of inf, nan and 1.#INF).
+    mutating func skip_number():
+        while self.at < self.data.length:
+            let byte = self.data[self.at]
+            if is_word(byte) or byte == '+' or byte == '#' or byte == '(' or byte == ')': self.at += 1
+            else: return
+
+    ## The first `byte` at or after `from_at`.
+    func find(byte: u8, from_at: usize) -> usize?:
+        var at = from_at
+        while at < self.data.length:
+            if self.data[at] == byte: return at
+            at += 1
+        return none
+
+    ## The start of the first `needle` in the text.
+    func find_text(needle: str) -> usize?:
+        if needle.length > self.data.length: return none
+        for at in 0..=(self.data.length - needle.length):
+            if (str)self.data[at..<at + needle.length] == needle: return at
+        return none
+
+func is_word(byte: u8) -> bool:
+    return (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or (byte >= '0' and byte <= '9') or byte == '_' or byte == '|' or byte == '-' or byte == '.'
+
+func is_number_start(byte: u8) -> bool:
+    return (byte >= '0' and byte <= '9') or byte == '-' or byte == '+' or byte == '.'
+
+## `token` as a decimal integer, or none when it is not one (or overflows).
+pub func parse_integer(token: const u8[]) -> i64?:
+    var at: usize = 0
+    var negative = false
+    if at < token.length and (token[at] == '-' or token[at] == '+'):
+        negative = token[at] == '-'
+        at += 1
+    if at == token.length: return none
+    var value: i64 = 0
+    while at < token.length:
+        let byte = token[at]
+        if byte < '0' or byte > '9': return none
+        value = value *? 10 else return none
+        value = value +? (i64)(byte - '0') else return none
+        at += 1
+    return -value if negative else value
+
+## Whether a bare word is inf, infinity or nan (any case, any payload).
+func is_special_number(word: const u8[]) -> bool:
+    var at: usize = 0
+    if at < word.length and (word[at] == '-' or word[at] == '+'): at += 1
+    if word.length - at < 3: return false
+    let a = word[at] | 0x20
+    let b = word[at + 1] | 0x20
+    let c = word[at + 2] | 0x20
+    return (a == 'i' and b == 'n' and c == 'f') or (a == 'n' and b == 'a' and c == 'n')
+
+## `token` as a real number: decimal text, inf, infinity and nan in any
+## case (nan with a payload in parentheses), and the MSVC spellings 1.#INF,
+## 1.#IND and 1.#QNAN.
+pub func parse_real(token: const u8[]) -> f64!:
+    if is_special_number(token):
+        let negative = token[0] == '-'
+        if (token[0 if not (token[0] == '-' or token[0] == '+') else 1] | 0x20) == 'i': return -math.infinity if negative else math.infinity
+        return math.nan
+    for at in 0..<token.length:
+        if token[at] == '#':
+            let negative = token.length > 0 and token[0] == '-'
+            if at + 1 < token.length and (token[at + 1] == 'I' or token[at + 1] == 'i') and at + 3 < token.length and (token[at + 3] == 'F' or token[at + 3] == 'f'):
+                return -math.infinity if negative else math.infinity
+            return math.nan
+    return strings.parse_f64((str)token) catch failure:
+        discard(failure)
+        error(errors.invalid, "an ASCII FBX number is not understood")

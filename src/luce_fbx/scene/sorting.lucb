@@ -1,0 +1,49 @@
+## Sorting arrays of indices by a key function: a stable merge sort (runs
+## of insertion sort, then bottom-up merges through scratch). Ties must be
+## broken by the orders themselves (by index), so every order is total.
+
+## Sort `indices` by `order` over `keys` (negative when `a` sorts first).
+pub func sort_indices[K](indices: u32[], keys: const K*, order: func(const K*, u32, u32) -> i64):
+    if indices.length < 2: return
+    let run: usize = 16
+    var start: usize = 0
+    while start < indices.length:
+        let end = start + run if indices.length - start > run else indices.length
+        insertion_sort(indices[start..<end], keys, order)
+        start = end
+    if indices.length <= run: return
+    let scratch = alloc u32[indices.length] in memory.heap catch failure:
+        # Without scratch memory, finish by insertion.
+        discard(failure)
+        insertion_sort(indices, keys, order)
+        return
+    defer free(scratch) in memory.heap
+    var width = run
+    while width < indices.length:
+        var left: usize = 0
+        while left < indices.length:
+            let middle = left + width if indices.length - left > width else indices.length
+            let right = middle + width if indices.length - middle > width else indices.length
+            var a = left
+            var b = middle
+            var out = left
+            while a < middle or b < right:
+                if b >= right or (a < middle and order(keys, indices[b], indices[a]) >= 0):
+                    scratch[out] = indices[a]
+                    a += 1
+                else:
+                    scratch[out] = indices[b]
+                    b += 1
+                out += 1
+            left = right
+        memory.copy(indices, scratch, indices.length)
+        width *= 2
+
+func insertion_sort[K](indices: u32[], keys: const K*, order: func(const K*, u32, u32) -> i64):
+    for at in 1..<indices.length:
+        let item = indices[at]
+        var slot = at
+        while slot > 0 and order(keys, indices[slot - 1], item) > 0:
+            indices[slot] = indices[slot - 1]
+            slot -= 1
+        indices[slot] = item

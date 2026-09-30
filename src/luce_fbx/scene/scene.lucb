@@ -1,0 +1,445 @@
+## The FBX scene over a parsed document: its objects (Objects' children),
+## the connections between them, the property templates of Definitions, and
+## the global settings. FBX 7 names objects by a 64-bit id; FBX 6 by their
+## full "Class::Name" string, and keeps a mesh's geometry inside its Model.
+## Both come out the same here: objects in document order, with object 0 a
+## synthetic root (FBX 7's id 0, FBX 6's "Model::Scene"), and connections
+## from a child object to a parent object, optionally naming a property of
+## the parent (OP connections: animation, textures).
+import memory
+import math
+import luce_fbx.errors as errors
+import luce_fbx.document as document
+from luce_fbx.document import Document, Property
+from geocore_growing import Growing
+from geocore import Vector3, Matrix4
+
+## What kind of object an Objects child is, by its node name.
+pub enum Kind as u8:
+    other = 0
+    root = 1
+    model = 2
+    geometry = 3
+    material = 4
+    attribute = 5
+    deformer = 6
+    subdeformer = 7
+    stack = 8
+    layer = 9
+    curve_node = 10
+    curve = 11
+    pose = 12
+    texture = 13
+
+pub struct Object:
+    pub var id: i64
+    ## Its node in the document (the root's is the document root).
+    pub var node: u32
+    pub var kind: Kind
+    ## Its name (without the class), in the scene's name text.
+    pub var name_at: u32
+    pub var name_length: u32
+    ## The property holding its subclass ("Mesh", "LimbNode", "Skin",
+    ## "Cluster", "BlendShapeChannel", "Shape"...), or none.
+    pub var subclass: u32
+    ## FBX 6: the property holding its "Class::Name" key.
+    pub var key: u32
+
+## No property / no object.
+pub let absent: u32 = 0xFFFFFFFF
+
+pub struct Connection:
+    pub var child: u32
+    pub var parent: u32
+    ## The parent's property an OP connection names (a document property
+    ## index), or absent.
+    pub var property: u32
+
+## A class's property template: an ObjectType of Definitions and its
+## Properties70.
+struct Template:
+    var class_node: u32
+    var properties: u32
+
+pub struct Scene:
+    pub var document: const Document*
+    ## FBX 6: objects are named, not numbered, and meshes live in Models.
+    pub var legacy: bool
+    pub var objects: Growing[Object]
+    pub var connections: Growing[Connection]
+    ## Sanitized object names, back to back.
+    pub var names: Growing[u8]
+    pub var settings: Settings
+    ## Object indices sorted by id (FBX 7) or by key text (FBX 6).
+    var lookup: Growing[u32]
+    ## Connection indices sorted by child, and by parent.
+    var by_child: Growing[u32]
+    var by_parent: Growing[u32]
+    var templates: Growing[Template]
+
+    ## The scene of a parsed document, which must outlive it.
+    pub static func of(source: const Document*) -> Scene!:
+        var scene = Scene(source, source.version < 7000, Growing[Object](), Growing[Connection](), Growing[u8](), Settings(), Growing[u32](), Growing[u32](), Growing[u32](), Growing[Template]())
+        errdefer scene.close()
+        try scene.read_objects()
+        try scene.read_connections()
+        try scene.read_templates()
+        try scene.read_settings()
+        return scene
+
+    pub mutating func close():
+        self.objects.close()
+        self.connections.close()
+        self.names.close()
+        self.lookup.close()
+        self.by_child.close()
+        self.by_parent.close()
+        self.templates.close()
+
+    pub func name(object: u32) -> str:
+        let found = &self.objects.items[(usize)object]
+        return (str)self.names.items[(usize)found.name_at..<(usize)(found.name_at + found.name_length)]
+
+    ## The object's subclass ("Mesh", "LimbNode", ...), or "".
+    pub func subclass(object: u32) -> str:
+        let found = &self.objects.items[(usize)object]
+        if found.subclass == absent: return ""
+        let property = &self.document.properties.items[(usize)found.subclass]
+        return self.document.string(property) else ""
+
+    ## The object's class: its node's name ("Model", "Geometry", ...).
+    pub func class(object: u32) -> str:
+        if object == 0: return ""
+        return self.document.name(self.objects.items[(usize)object].node)
+
+    pub func kind(object: u32) -> Kind:
+        return self.objects.items[(usize)object].kind
+
+    ## The object with FBX id `id`.
+    pub func by_id(id: i64) -> u32?:
+        var low: usize = 0
+        var high = self.lookup.count
+        while low < high:
+            let middle = (low + high) // 2
+            let found = self.objects.items[(usize)self.lookup.items[middle]].id
+            if found < id: low = middle + 1
+            elif found > id: high = middle
+            else: return self.lookup.items[middle]
+        return none
+
+    ## FBX 6: the object whose key is `key` ("Model::Cube").
+    func by_key(key: const u8[]) -> u32?:
+        var low: usize = 0
+        var high = self.lookup.count
+        while low < high:
+            let middle = (low + high) // 2
+            let order = compare_bytes(self.key(self.lookup.items[middle]), key)
+            if order < 0: low = middle + 1
+            elif order > 0: high = middle
+            else: return self.lookup.items[middle]
+        return none
+
+    ## FBX 6: an object's key bytes.
+    func key(object: u32) -> const u8[]:
+        let found = &self.objects.items[(usize)object]
+        if found.key == absent: return "Model::Scene".bytes
+        let property = &self.document.properties.items[(usize)found.key]
+        return self.document.data[property.offset..<property.offset + property.size]
+
+    ## The connections whose child is `object`: a range of by_child.
+    func child_range(object: u32) -> (usize, usize):
+        return equal_range(&self.by_child, &self.connections, object, true)
+
+    ## The connections whose parent is `object`: a range of by_parent.
+    func parent_range(object: u32) -> (usize, usize):
+        return equal_range(&self.by_parent, &self.connections, object, false)
+
+    ## How many objects `object` connects to as a child, and the n-th.
+    pub func parent_count(object: u32) -> usize:
+        let (first, end) = self.child_range(object)
+        return end - first
+
+    pub func parent_connection(object: u32, index: usize) -> const Connection*:
+        let (first, _end) = self.child_range(object)
+        return &self.connections.items[(usize)self.by_child.items[first + index]]
+
+    ## How many objects connect to `object` as their parent, and the n-th,
+    ## in file order.
+    pub func child_count(object: u32) -> usize:
+        let (first, end) = self.parent_range(object)
+        return end - first
+
+    pub func child_connection(object: u32, index: usize) -> const Connection*:
+        let (first, _end) = self.parent_range(object)
+        return &self.connections.items[(usize)self.by_parent.items[first + index]]
+
+    ## The first object of `kind` connected to `object` as its child
+    ## (object to object: no property).
+    pub func child_of_kind(object: u32, kind: Kind) -> u32?:
+        for index in 0..<self.child_count(object):
+            let connection = self.child_connection(object, index)
+            if connection.property == absent and self.objects.items[(usize)connection.child].kind == kind: return connection.child
+        return none
+
+    ## The first object of `kind` that `object` connects to as a child.
+    pub func parent_of_kind(object: u32, kind: Kind) -> u32?:
+        for index in 0..<self.parent_count(object):
+            let connection = self.parent_connection(object, index)
+            if connection.property == absent and self.objects.items[(usize)connection.parent].kind == kind: return connection.parent
+        return none
+
+    ## What a model object is, as ufbx names its node's attribute: "mesh",
+    ## "bone", "camera", "light", "line", "nurbscurve", "nurbssurface",
+    ## "null" or "other".
+    pub func model_kind(object: u32) -> str:
+        for index in 0..<self.child_count(object):
+            let connection = self.child_connection(object, index)
+            if connection.property != absent: continue
+            let child = connection.child
+            let kind = self.objects.items[(usize)child].kind
+            if kind != Kind.geometry and kind != Kind.attribute: continue
+            let subclass = self.subclass(child)
+            match subclass:
+                "Mesh": return "mesh"
+                "LimbNode", "Limb", "Root": return "bone"
+                "Camera": return "camera"
+                "Light": return "light"
+                "Line": return "line"
+                "NurbsCurve": return "nurbscurve"
+                "NurbsSurface": return "nurbssurface"
+                "Null": return "null"
+                _: return "other"
+        match self.subclass(object):
+            "Mesh": return "mesh" if self.legacy else "null"
+            "LimbNode", "Limb", "Root": return "bone"
+            "Camera": return "camera"
+            "Light": return "light"
+            _: return "null"
+
+    ## The name of the parent property an OP connection names, or "".
+    pub func connection_property(connection: const Connection*) -> str:
+        if connection.property == absent: return ""
+        return self.document.string(&self.document.properties.items[(usize)connection.property]) else ""
+
+    mutating func read_objects() -> !:
+        let source = self.document
+        # Object 0: the root.
+        try self.objects.push(Object(id = 0, node = 0, kind = Kind.root, name_at = 0, name_length = 0, subclass = absent, key = absent))
+        let objects = source.child(0, "Objects") else return
+        var cursor = source.first_child(objects)
+        while let node = cursor:
+            cursor = source.next_sibling(objects, node)
+            try self.read_object(node)
+        # Lookup tables: by id, or by key text.
+        try self.lookup.reserve(self.objects.count)
+        for index in 0..<(u32)self.objects.count: try self.lookup.push(index)
+        if self.legacy:
+            sort_indices(self.lookup.items[..<self.lookup.count], &self, by_key_order)
+        else:
+            sort_indices(self.lookup.items[..<self.lookup.count], &self, by_id_order)
+
+    mutating func read_object(node: u32) -> !:
+        let source = self.document
+        let class = source.name(node)
+        var id: i64 = 0
+        var name_index: usize = 0
+        var subclass_index: usize = 1
+        var key = absent
+        if self.legacy:
+            # FBX 6: `Model: "Model::Name", "Mesh"`; GlobalSettings and the
+            # like carry no name.
+            let first = source.property(node, 0) else return
+            if first.kind != 'S': return
+            key = self.document.nodes.items[(usize)node].first_property
+            id = (i64)self.objects.count
+        else:
+            # FBX 7: `Model: id, "Name\x00\x01Model" or "Model::Name", "Mesh"`.
+            let first = source.property(node, 0) else return
+            if first.kind != 'L' and first.kind != 'I' and first.kind != 'N': return
+            id = first.integer
+            name_index = 1
+            subclass_index = 2
+        var name_at = (u32)self.names.count
+        var name_length: u32 = 0
+        if let raw = source.property(node, name_index):
+            if raw.kind == 'S':
+                let bytes = source.data[raw.offset..<raw.offset + raw.size]
+                name_length = try self.add_name(object_name(bytes))
+        var subclass = absent
+        if let found = source.property(node, subclass_index):
+            if found.kind == 'S': subclass = self.document.nodes.items[(usize)node].first_property + (u32)subclass_index
+        try self.objects.push(Object(id = id, node = node, kind = kind_of(class), name_at = name_at, name_length = name_length, subclass = subclass, key = key))
+
+    ## Append a name; its length. As ufbx sanitizes strings, each byte that
+    ## does not start a valid UTF-8 sequence (and each NUL) becomes U+FFFD,
+    ## and ASCII files' `&quot;` becomes a quote.
+    mutating func add_name(bytes: const u8[]) -> u32!:
+        let start = self.names.count
+        let ascii = not self.document.binary
+        var at: usize = 0
+        while at < bytes.length:
+            if ascii and bytes[at] == '&' and at + 6 <= bytes.length and (str)bytes[at..<at + 6] == "&quot;":
+                try self.names.push('"')
+                at += 6
+                continue
+            let length = sequence_length(bytes[at..])
+            if length == 0:
+                try self.names.push(0xEF)
+                try self.names.push(0xBF)
+                try self.names.push(0xBD)
+                at += 1
+                continue
+            for index in 0..<length: try self.names.push(bytes[at + index])
+            at += length
+        return (u32)(self.names.count - start)
+
+    mutating func read_connections() -> !:
+        let source = self.document
+        if let connections = source.child(0, "Connections"):
+            var cursor = source.first_child(connections)
+            while let node = cursor:
+                cursor = source.next_sibling(connections, node)
+                try self.read_connection(node)
+        try self.by_child.reserve(self.connections.count)
+        try self.by_parent.reserve(self.connections.count)
+        for index in 0..<(u32)self.connections.count:
+            try self.by_child.push(index)
+            try self.by_parent.push(index)
+        sort_indices(self.by_child.items[..<self.by_child.count], &self, by_child_order)
+        sort_indices(self.by_parent.items[..<self.by_parent.count], &self, by_parent_order)
+
+    mutating func read_connection(node: u32) -> !:
+        let source = self.document
+        let name = source.name(node)
+        if name != "C" and name != "Connect": return
+        let kind = source.property(node, 0) else return
+        if kind.kind != 'S' or kind.size < 2: return
+        let op = source.data[kind.offset + 1] == 'P'
+        let child = self.connection_end(node, 1) else return
+        let parent = self.connection_end(node, 2) else return
+        var property = absent
+        if op:
+            if let named = source.property(node, 3):
+                if named.kind == 'S': property = self.document.nodes.items[(usize)node].first_property + 3
+        try self.connections.push(Connection(child = child, parent = parent, property = property))
+
+    ## The object a connection's property `index` names.
+    func connection_end(node: u32, index: usize) -> u32?:
+        let found = self.document.property(node, index) else return none
+        if found.kind == 'S':
+            let key = self.document.data[found.offset..<found.offset + found.size]
+            if (str)key == "Model::Scene": return 0
+            return self.by_key(key)
+        let id = document.scalar_integer(found) else return none
+        if id == 0: return 0
+        return self.by_id(id)
+
+    mutating func read_templates() -> !:
+        let source = self.document
+        let definitions = source.child(0, "Definitions") else return
+        var cursor = source.first_child(definitions)
+        while let node = cursor:
+            cursor = source.next_sibling(definitions, node)
+            if source.name(node) != "ObjectType": continue
+            let template = source.child(node, "PropertyTemplate") else continue
+            let properties = source.child(template, "Properties70") else continue
+            try self.templates.push(Template(class_node = node, properties = properties))
+
+    ## The Properties70 of the template for objects of `class`.
+    func template(class: str) -> u32?:
+        for template in self.templates.view():
+            let found = self.document.text(template.class_node, 0) else continue
+            if found == class: return template.properties
+        return none
+
+## An object's name from its name property: FBX 7 binary "Name\x00\x01Class",
+## otherwise "Class::Name".
+func object_name(bytes: const u8[]) -> const u8[]:
+    for at in 0..<bytes.length:
+        if bytes[at] == 0 and at + 1 < bytes.length and bytes[at + 1] == 1: return bytes[..<at]
+    if bytes.length >= 2:
+        for at in 0..<bytes.length - 1:
+            if bytes[at] == ':' and bytes[at + 1] == ':': return bytes[at + 2..]
+    return bytes
+
+## The length of the valid UTF-8 sequence starting `bytes` (not NUL), or 0
+## (ufbx's rules: no overlong forms, no surrogates, at most U+10FFFF).
+func sequence_length(bytes: const u8[]) -> usize:
+    let c = (u32)bytes[0]
+    let left = bytes.length
+    if c & 0x80 == 0: return 0 if c == 0 else 1
+    if c & 0xE0 == 0xC0 and left >= 2:
+        let code = c << 8 | (u32)bytes[1]
+        if code & 0xC0 == 0x80 and code >= 0xC280: return 2
+    elif c & 0xF0 == 0xE0 and left >= 3:
+        let code = c << 16 | (u32)bytes[1] << 8 | (u32)bytes[2]
+        if code & 0xC0C0 == 0x8080 and code >= 0xE0A080 and (code < 0xEDA080 or code >= 0xEE8080): return 3
+    elif c & 0xF8 == 0xF0 and left >= 4:
+        let code = c << 24 | (u32)bytes[1] << 16 | (u32)bytes[2] << 8 | (u32)bytes[3]
+        if code & 0xC0C0C0 == 0x808080 and code >= 0xF0908080 and code <= 0xF48FBFBF: return 4
+    return 0
+
+func kind_of(class: str) -> Kind:
+    match class:
+        "Model": return Kind.model
+        "Geometry": return Kind.geometry
+        "Material": return Kind.material
+        "NodeAttribute": return Kind.attribute
+        "Deformer": return Kind.deformer
+        "SubDeformer": return Kind.subdeformer
+        "AnimationStack": return Kind.stack
+        "AnimationLayer": return Kind.layer
+        "AnimationCurveNode": return Kind.curve_node
+        "AnimationCurve": return Kind.curve
+        "Pose": return Kind.pose
+        "Texture": return Kind.texture
+        _: return Kind.other
+
+func compare_bytes(a: const u8[], b: const u8[]) -> i64:
+    let shorter = a.length if a.length < b.length else b.length
+    for at in 0..<shorter:
+        if a[at] != b[at]: return (i64)a[at] - (i64)b[at]
+    return (i64)a.length - (i64)b.length
+
+## Orders for sorting index arrays: negative when `a` sorts before `b`.
+func by_id_order(scene: const Scene*, a: u32, b: u32) -> i64:
+    let x = scene.objects.items[(usize)a].id
+    let y = scene.objects.items[(usize)b].id
+    if x != y: return -1 if x < y else 1
+    return (i64)a - (i64)b
+
+func by_key_order(scene: const Scene*, a: u32, b: u32) -> i64:
+    let order = compare_bytes(scene.key(a), scene.key(b))
+    if order != 0: return order
+    return (i64)a - (i64)b
+
+func by_child_order(scene: const Scene*, a: u32, b: u32) -> i64:
+    let x = scene.connections.items[(usize)a].child
+    let y = scene.connections.items[(usize)b].child
+    if x != y: return -1 if x < y else 1
+    return (i64)a - (i64)b
+
+func by_parent_order(scene: const Scene*, a: u32, b: u32) -> i64:
+    let x = scene.connections.items[(usize)a].parent
+    let y = scene.connections.items[(usize)b].parent
+    if x != y: return -1 if x < y else 1
+    return (i64)a - (i64)b
+
+## The run of `sorted` (connection indices) whose child (or parent) is
+## `object`.
+func equal_range(sorted: const Growing[u32]*, connections: const Growing[Connection]*, object: u32, by_child: bool) -> (usize, usize):
+    var low: usize = 0
+    var high = sorted.count
+    while low < high:
+        let middle = (low + high) // 2
+        let connection = &connections.items[(usize)sorted.items[middle]]
+        let value = connection.child if by_child else connection.parent
+        if value < object: low = middle + 1
+        else: high = middle
+    var end = low
+    while end < sorted.count:
+        let connection = &connections.items[(usize)sorted.items[end]]
+        let value = connection.child if by_child else connection.parent
+        if value != object: break
+        end += 1
+    return (low, end)

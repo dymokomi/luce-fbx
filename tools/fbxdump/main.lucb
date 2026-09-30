@@ -1,0 +1,66 @@
+## fbxdump: what luce-fbx reads from a file, in the canonical text the ufbx
+## parity oracle prints (lines of `file`, `settings`, `node`, `mesh`, `pos`,
+## `attr`, `mat`, `curve`; numbers as %.6g). A local parity script compares
+## the two over a corpus of FBX files. Fields are separated by tabs.
+##
+##     fbxdump FILE
+import c
+import memory
+import geocore_parallel as pool
+from fbx_kernel import Document, Scene, Hierarchy, Kind, read_file
+from geocore import Matrix4, Vector3
+
+pub func main(arguments: str[]) -> i32!:
+    if arguments.length < 2:
+        print("usage: fbxdump FILE")
+        return 2
+    pool.warm()
+    let data = try read_file(arguments[1])
+    defer free(data) in memory.heap
+    var document = Document.parse(data) catch failure:
+        print(f"error {failure.message}")
+        return 1
+    defer document.close()
+    var scene = Scene.of(&document) catch failure:
+        print(f"error {failure.message}")
+        return 1
+    defer scene.close()
+    var hierarchy = scene.hierarchy() catch failure:
+        print(f"error {failure.message}")
+        return 1
+    defer hierarchy.close()
+    print(f"file\tversion={document.version}\tascii={0 if document.binary else 1}")
+    let s = scene.settings
+    var meters: u8[32] = ---
+    var rate: u8[32] = ---
+    print(f"settings\tup={s.up.text()}\tfront={s.front.text()}\tunit={g(s.meters, meters)}\tfps={g(s.frame_rate, rate)}")
+    for model in 1..<(u32)hierarchy.models.count:
+        let entry = &hierarchy.models.items[(usize)model]
+        var numbers: u8[512] = ---
+        let matrix = matrix_text(&entry.world, numbers)
+        let inherit = (u8)entry.inherit
+        print(f"node\t{hierarchy.path(model)}\tkind={scene.model_kind(entry.object)}\tinherit={inherit}\tworld={matrix}")
+    return 0
+
+extern func snprintf(output: u8*, size: usize, format: c.str, ...) -> i32
+
+## A number as C's %.6g prints it, in `out`.
+func g(value: f64, out: u8[]) -> str:
+    let written = snprintf(out.data, out.length, "%.6g", value + 0.0)
+    return (str)out[..<(usize)written]
+
+## The 12 numbers of an affine matrix, column by column, comma separated.
+func matrix_text(m: const Matrix4*, out: u8[]) -> str:
+    let columns: Vector3[4] = [m.x, m.y, m.z, m.translation]
+    var used: usize = 0
+    for column in 0..<4:
+        let values: f64[3] = [columns[column].x, columns[column].y, columns[column].z]
+        for row in 0..<3:
+            if column > 0 or row > 0:
+                out[used] = ','
+                used += 1
+            var number: u8[32] = ---
+            let text = g(values[row], number)
+            memory.copy(out[used..], text.bytes, text.length)
+            used += text.length
+    return (str)out[..<used]

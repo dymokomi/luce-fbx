@@ -1,0 +1,184 @@
+## The FBX node tree, the same for binary and ASCII files: every node in one
+## flat table in document order, every property in another. A node's subtree
+## is the run of nodes after it up to its `end`, so its children are found by
+## hopping from one child's `end` to the next. Array properties are recorded
+## where their bytes are (raw, zlib or ASCII text) and decoded only when the
+## converter asks (arrays.lucb), in one parallel batch.
+##
+## Node 0 is a root with no name and no properties; the file's top-level
+## nodes (FBXHeaderExtension, GlobalSettings, Objects, Connections, ...) are
+## its children. The document borrows the file's bytes: names, strings and
+## arrays point into them, so the bytes must outlive the document.
+import memory
+import math
+import strings
+import geocore_parallel as pool
+import luce_fbx.errors as errors
+import luce_fbx.budget as budget
+import flate
+from geocore_growing import Growing
+
+## A property's kind is its FBX type code. Binary scalars: 'C' bool, 'Y'
+## i16, 'I' i32, 'L' i64, 'F' f32, 'D' f64; 'S' text, 'R' raw bytes; arrays
+## 'b' (bool bytes), 'i', 'l', 'f', 'd'. ASCII values are 'N' (a number: its
+## integer and real value both set), 'S' (a quoted string or a bare word) and
+## 'a' (a numeric array: the `*N { a: ... }` form, or a long run of numbers
+## in FBX 6).
+pub struct Property:
+    pub var kind: u8
+    ## How an array's payload is stored.
+    pub var encoding: Encoding
+    ## Elements of an array; bytes of a string.
+    pub var count: usize
+    ## Where the payload (array data or text, string bytes) is in the file.
+    pub var offset: usize
+    pub var size: usize
+    ## A scalar's value; for 'N' both are set.
+    pub var integer: i64
+    pub var real: f64
+
+pub enum Encoding as u8:
+    raw = 0
+    zlib = 1
+    text = 2
+
+pub struct Node:
+    ## The name's bytes in the file.
+    pub var name_at: usize
+    pub var name_length: u32
+    ## Its properties: properties[first_property ..< first_property + property_count].
+    pub var first_property: u32
+    pub var property_count: u32
+    ## One past its last descendant in the node table.
+    pub var end: u32
+
+## Nodes nested deeper than this are refused, as ufbx refuses them.
+pub let most_depth: usize = 32
+
+pub struct Document:
+    ## The file's bytes, borrowed.
+    pub var data: const u8[]
+    ## The FBX version as written (7400 is 7.4).
+    pub var version: u32
+    pub var binary: bool
+    ## A big-endian binary file (old PowerPC exporters).
+    pub var big: bool
+    pub var nodes: Growing[Node]
+    pub var properties: Growing[Property]
+
+    ## Parse `data`, binary or ASCII, into the node tree.
+    pub static func parse(data: const u8[]) -> Document!:
+        var document = Document(data, 0, false, false, Growing[Node](), Growing[Property]())
+        errdefer document.close()
+        if is_binary(data):
+            try document.parse_binary()
+        else:
+            try document.parse_ascii()
+        return document
+
+    pub mutating func close():
+        self.nodes.close()
+        self.properties.close()
+
+    ## The root node (0): the top-level nodes are its children.
+    pub func root() -> u32:
+        return 0
+
+    pub func name(node: u32) -> str:
+        let entry = &self.nodes.items[(usize)node]
+        return (str)self.data[entry.name_at..<entry.name_at + (usize)entry.name_length]
+
+    ## The first child of `node`, if any.
+    pub func first_child(node: u32) -> u32?:
+        let next = node + 1
+        if next >= self.nodes.items[(usize)node].end: return none
+        return next
+
+    ## The child of `parent` after `child`, if any.
+    pub func next_sibling(parent: u32, child: u32) -> u32?:
+        let next = self.nodes.items[(usize)child].end
+        if next >= self.nodes.items[(usize)parent].end: return none
+        return next
+
+    ## The first child of `parent` named `name`.
+    pub func child(parent: u32, name: str) -> u32?:
+        var cursor = self.first_child(parent)
+        while let node = cursor:
+            if self.name(node) == name: return node
+            cursor = self.next_sibling(parent, node)
+        return none
+
+    ## The next child of `parent` after `child` with `child`'s name.
+    pub func next_named(parent: u32, child: u32) -> u32?:
+        let name = self.name(child)
+        var cursor = self.next_sibling(parent, child)
+        while let node = cursor:
+            if self.name(node) == name: return node
+            cursor = self.next_sibling(parent, node)
+        return none
+
+    ## How many children `parent` has named `name`.
+    pub func count_named(parent: u32, name: str) -> usize:
+        var count: usize = 0
+        var cursor = self.first_child(parent)
+        while let node = cursor:
+            if self.name(node) == name: count += 1
+            cursor = self.next_sibling(parent, node)
+        return count
+
+    pub func property_count(node: u32) -> usize:
+        return (usize)self.nodes.items[(usize)node].property_count
+
+    ## Property `index` of `node`, if it has one.
+    pub func property(node: u32, index: usize) -> const Property*?:
+        let entry = &self.nodes.items[(usize)node]
+        if index >= (usize)entry.property_count: return none
+        return &self.properties.items[(usize)entry.first_property + index]
+
+    ## Property `index` of `node` as an integer (from any numeric scalar).
+    pub func integer(node: u32, index: usize) -> i64!:
+        let found = self.property(node, index) else error(errors.invalid, "an FBX node lacks a numeric value")
+        return try scalar_integer(found)
+
+    ## Property `index` of `node` as a real number (from any numeric scalar).
+    pub func real(node: u32, index: usize) -> f64!:
+        let found = self.property(node, index) else error(errors.invalid, "an FBX node lacks a numeric value")
+        return try scalar_real(found)
+
+    ## Property `index` of `node` as text ('S' or 'R'); bytes that are not
+    ## UTF-8 fail (object names are sanitized by the scene instead).
+    pub func text(node: u32, index: usize) -> str!:
+        let found = self.property(node, index) else error(errors.invalid, "an FBX node lacks a string value")
+        return try self.string(found)
+
+    ## The text of a string property.
+    pub func string(found: const Property*) -> str!:
+        if found.kind != 'S' and found.kind != 'R': error(errors.invalid, "an FBX value is not a string")
+        let bytes = self.data[found.offset..<found.offset + found.size]
+        return str(bytes) catch failure:
+            discard(failure)
+            error(errors.invalid, "an FBX string is not UTF-8")
+
+    ## The integer value of the first child of `parent` named `name`, or
+    ## `fallback` when there is none.
+    pub func child_integer(parent: u32, name: str, fallback: i64) -> i64!:
+        let node = self.child(parent, name) else return fallback
+        return try self.integer(node, 0)
+
+## An integer from a numeric scalar property.
+pub func scalar_integer(found: const Property*) -> i64!:
+    match found.kind:
+        'C', 'Y', 'I', 'L', 'N': return found.integer
+        'F', 'D': return (i64)found.real
+        _: error(errors.invalid, "an FBX value is not a number")
+
+## A real number from a numeric scalar property.
+pub func scalar_real(found: const Property*) -> f64!:
+    match found.kind:
+        'C', 'Y', 'I', 'L': return (f64)found.integer
+        'F', 'D', 'N': return found.real
+        _: error(errors.invalid, "an FBX value is not a number")
+
+## Whether `data` starts with the binary FBX signature.
+pub func is_binary(data: const u8[]) -> bool:
+    return data.length >= 27 and (str)data[..<20] == "Kaydara FBX Binary  " and data[20] == 0

@@ -1,0 +1,62 @@
+## Files on disk: whole-file reads in one allocation sized from the file's
+## metadata (the file must fit in physical memory; there is no other cap), and
+## whole-file writes that replace the old file atomically.
+import c
+import memory
+import strings
+import utf8
+import files
+import luce_fbx.errors as errors
+import luce_fbx.budget as budget
+
+## `path` as a NUL-terminated native string on memory.heap; release it with
+## strings.release.
+func native_path(path: str) -> str!:
+    if path.length == 0 or not utf8.valid(path.bytes):
+        error(files.invalid_options, "a path must be nonempty UTF-8")
+    for byte in path.bytes:
+        if byte == 0: error(files.invalid_options, "a path cannot contain NUL")
+    return try strings.copy(path)
+
+## The bytes of the file at `path` on memory.heap; the caller frees them. An
+## empty file returns an empty span (nothing to free). A file that grows while
+## it is read grows the buffer by doubling, within physical memory.
+pub func read(path: str) -> u8[]!:
+    let native = try native_path(path)
+    defer strings.release(native)
+    var file = try files.File.open((c.str)native)
+    defer file.destroy()
+    let info = try file.metadata()
+    let limit = budget.physical_memory()
+    if info.size >= 0: try budget.require((u64)info.size)
+    # One byte more than the size tells an exact fit from a file that grew.
+    var capacity = (usize)info.size + 1 if info.size >= 0 else 65536
+    if (u64)capacity > limit: capacity = (usize)limit
+    var data = try alloc u8[capacity] in memory.heap
+    errdefer free(data) in memory.heap
+    var used: usize = 0
+    while true:
+        if used == data.length:
+            if (u64)used >= limit: error(errors.limit, "the FBX file is larger than this machine's memory")
+            var larger = (u64)data.length * 2
+            if larger > limit: larger = limit
+            let grown = try alloc u8[(usize)larger] in memory.heap
+            memory.copy(grown, data, used)
+            free(data) in memory.heap
+            data = grown
+        let count = try file.read(data[used..])
+        if count == 0: break
+        used += count
+    try file.close()
+    if used == 0:
+        # A zero-length span frees nothing, so return the block now.
+        free(data) in memory.heap
+        var empty: u8[]
+        return empty
+    return data[..<used]
+
+## Write `data` to `path`, replacing any file there atomically.
+pub func write(path: str, data: const u8[]) -> !:
+    let native = try native_path(path)
+    defer strings.release(native)
+    try files.write_atomic((c.str)native, data)

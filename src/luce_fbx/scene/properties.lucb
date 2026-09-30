@@ -1,0 +1,81 @@
+## Object properties: an object's own Properties70 (FBX 7: `P: "Name",
+## "Type", "Label", "Flags", values...`) or Properties60 (FBX 6: `Property:
+## "Name", "Type", "Flags", values...`), falling back to its class's
+## template in Definitions, then to the caller's default. Lookups scan the
+## list: objects hold tens of properties.
+
+## A found property: its node and where its values start.
+pub struct Found:
+    pub var node: u32
+    pub var first_value: usize
+
+extend Scene:
+    ## The property `name` of `object`, its own or its template's.
+    pub func find(object: u32, name: str) -> Found?:
+        if object == 0: return none
+        let node = self.objects.items[(usize)object].node
+        if let own = self.find_in(node, name): return own
+        if let template = self.template(self.document.name(node)):
+            return self.find_in_list(template, name, 4)
+        return none
+
+    ## A property among `node`'s Properties70 or Properties60 children.
+    pub func find_in(node: u32, name: str) -> Found?:
+        if let list = self.document.child(node, "Properties70"): return self.find_in_list(list, name, 4)
+        if let list = self.document.child(node, "Properties60"): return self.find_in_list(list, name, 3)
+        return none
+
+    ## The last entry named `name` (a repeated property's last value wins,
+    ## as in ufbx).
+    func find_in_list(list: u32, name: str, first_value: usize) -> Found?:
+        let source = self.document
+        var result: Found? = none
+        var cursor = source.first_child(list)
+        while let entry = cursor:
+            cursor = source.next_sibling(list, entry)
+            let found = source.property(entry, 0) else continue
+            if found.kind != 'S' or found.size != name.length: continue
+            if (str)source.data[found.offset..<found.offset + found.size] == name: result = Found(entry, first_value)
+        return result
+
+    ## A number property of `object` (the first value), or `fallback`.
+    pub func number(object: u32, name: str, fallback: f64) -> f64:
+        let found = self.find(object, name) else return fallback
+        return self.document.real(found.node, found.first_value) else fallback
+
+    ## An integer (or enum, or bool) property of `object`, or `fallback`.
+    pub func integer(object: u32, name: str, fallback: i64) -> i64:
+        let found = self.find(object, name) else return fallback
+        return self.document.integer(found.node, found.first_value) else fallback
+
+    ## A vector property of `object` (three values), or `fallback`.
+    pub func vector(object: u32, name: str, fallback: Vector3) -> Vector3:
+        let found = self.find(object, name) else return fallback
+        return self.values(found, fallback)
+
+    ## A string property of `object`, or `fallback`.
+    pub func string_property(object: u32, name: str, fallback: str) -> str:
+        let found = self.find(object, name) else return fallback
+        return self.document.text(found.node, found.first_value) else fallback
+
+    ## The three values of a found property, or `fallback` when it has fewer.
+    pub func values(found: Found, fallback: Vector3) -> Vector3:
+        let source = self.document
+        let x = source.real(found.node, found.first_value) else return fallback
+        let y = source.real(found.node, found.first_value + 1) else return fallback
+        let z = source.real(found.node, found.first_value + 2) else return fallback
+        return Vector3(x, y, z)
+
+    ## A settings property (GlobalSettings, which FBX 6 keeps in Objects).
+    pub func setting(name: str) -> Found?:
+        let source = self.document
+        if let settings = source.child(0, "GlobalSettings"):
+            if let found = self.find_in(settings, name): return found
+        if let objects = source.child(0, "Objects"):
+            if let settings = source.child(objects, "GlobalSettings"):
+                return self.find_in(settings, name)
+        return none
+
+    pub func setting_number(name: str, fallback: f64) -> f64:
+        let found = self.setting(name) else return fallback
+        return self.document.real(found.node, found.first_value) else fallback
