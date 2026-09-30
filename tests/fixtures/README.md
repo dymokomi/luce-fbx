@@ -13,6 +13,10 @@ accompanying UFBX-LICENSE.txt (MIT alternative):
   `blender_293x_subsurf_max_crease_7400_binary.fbx`,
   `max_edge_visibility_7500_binary.fbx`, `max_curve_line_7500_ascii.fbx`,
   `max_nurbs_curve_rational_7500_ascii.fbx`: the conversion checks.
+- `maya_anim_extrapolation_7700_binary.fbx`, `maya_anim_layers_7500_binary.fbx`,
+  `maya_auto_clamp_7700_ascii.fbx`, `maya_blend_inbetween_7500_binary.fbx`,
+  `maya_dq_weights_7500_binary.fbx`: the animation checks (ufbx's values in
+  tests/anim_checks.lucb).
 
 Ours:
 

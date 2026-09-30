@@ -1,0 +1,238 @@
+## Blend shapes and skins, read with the mesh they deform (the Deformers
+## connected to its Geometry). This fragment finds them and plans their
+## arrays; deform.lucb applies them.
+##
+## - A BlendShape deformer's BlendShapeChannels each hold Shape geometries
+##   (Indexes, and Vertices as offsets), keyed by FullWeights (percent; 100
+##   when absent), and a DeformPercent.
+## - A Skin deformer's Clusters each hold Indexes and Weights, Transform
+##   (the mesh's bind space to the bone's) and TransformLink (the bone's bind
+##   in world space), and their bone: the Model connected to the cluster.
+##   SkinningType picks linear, dual quaternion or blended skinning
+##   (per-vertex BlendWeights).
+
+pub enum Skinning as u8:
+    linear = 0
+    dual_quaternion = 1
+    blended = 2
+    rigid = 3
+
+## One blend shape target.
+pub struct ShapeTarget:
+    pub var indexes: i32[]
+    ## Offsets, three per index.
+    pub var offsets: f64[]
+    ## Blender's exporter writes a weight per offset (its FullWeights).
+    pub var offset_weights: f64[]
+    ## Where it applies fully (FullWeights / 100).
+    pub var target: f64
+    pub var effective: f64
+
+    pub mutating func release():
+        if self.indexes.length > 0: free(self.indexes) in memory.heap
+        if self.offsets.length > 0: free(self.offsets) in memory.heap
+        if self.offset_weights.length > 0: free(self.offset_weights) in memory.heap
+
+pub struct BlendChannel:
+    pub var object: u32
+    ## Its shapes: targets[first ..< first + count], by target weight.
+    pub var first: usize
+    pub var count: usize
+    pub var full_weights: f64[]
+
+    pub mutating func release():
+        if self.full_weights.length > 0: free(self.full_weights) in memory.heap
+
+pub struct SkinCluster:
+    ## The bone's model (a hierarchy model), or absent.
+    pub var bone: u32
+    pub var indexes: i32[]
+    pub var weights: f64[]
+    pub var transform: f64[]
+    pub var link: f64[]
+    ## Geometry to world at the evaluated pose.
+    pub var matrix: Matrix4
+
+    pub mutating func release():
+        if self.indexes.length > 0: free(self.indexes) in memory.heap
+        if self.weights.length > 0: free(self.weights) in memory.heap
+        if self.transform.length > 0: free(self.transform) in memory.heap
+        if self.link.length > 0: free(self.link) in memory.heap
+
+pub struct Deformation:
+    ## Each point's skin matrix's linear part (9 f32, column by column),
+    ## which turns its normals and tangents (deform.lucb).
+    pub var linear: Growing[f32]
+    pub var channels: Growing[BlendChannel]
+    pub var targets: Growing[ShapeTarget]
+    pub var clusters: Growing[SkinCluster]
+    pub var skinning: Skinning
+    pub var skinned: bool
+    ## Blended skinning's per-vertex dual quaternion weights.
+    pub var dq_indexes: i32[]
+    pub var dq_weights: f64[]
+
+    pub func init():
+        self.linear = Growing[f32]()
+        self.channels = Growing[BlendChannel]()
+        self.targets = Growing[ShapeTarget]()
+        self.clusters = Growing[SkinCluster]()
+        self.skinning = Skinning.linear
+        self.skinned = false
+        self.dq_indexes = empty_ints()
+        self.dq_weights = empty_reals()
+
+    pub mutating func close():
+        for index in 0..<self.channels.count: self.channels.items[index].release()
+        for index in 0..<self.targets.count: self.targets.items[index].release()
+        for index in 0..<self.clusters.count: self.clusters.items[index].release()
+        self.linear.close()
+        self.channels.close()
+        self.targets.close()
+        self.clusters.close()
+        if self.dq_indexes.length > 0: free(self.dq_indexes) in memory.heap
+        if self.dq_weights.length > 0: free(self.dq_weights) in memory.heap
+
+    pub func any() -> bool:
+        return self.channels.count > 0 or self.clusters.count > 0
+
+## Find the deformers of geometry `object` and plan their arrays.
+func read_deformers(scene: const Scene*, hierarchy: const Hierarchy*, object: u32, into: Deformation*, jobs: Growing[ArrayJob]*) -> !:
+    let source = scene.document
+    for index in 0..<scene.child_count(object):
+        let connection = scene.child_connection(object, index)
+        if connection.property != absent or scene.kind(connection.child) != Kind.deformer: continue
+        let deformer = connection.child
+        match scene.subclass(deformer):
+            "BlendShape": try read_blend(scene, deformer, into, jobs)
+            "Skin":
+                # One skin deforms a mesh (ufbx uses the first).
+                if into.skinned: continue
+                into.skinned = true
+                try read_skin(scene, hierarchy, deformer, into, jobs)
+            _: continue
+    discard(source)
+
+func read_blend(scene: const Scene*, deformer: u32, into: Deformation*, jobs: Growing[ArrayJob]*) -> !:
+    let source = scene.document
+    for index in 0..<scene.child_count(deformer):
+        let connection = scene.child_connection(deformer, index)
+        if connection.property != absent or not is_deformer(scene, connection.child): continue
+        let channel = connection.child
+        if scene.subclass(channel) != "BlendShapeChannel": continue
+        var entry = BlendChannel(object = channel, first = into.targets.count, count = 0, full_weights = empty_reals())
+        errdefer entry.release()
+        let node = scene.objects.items[(usize)channel].node
+        if let weights = array_node(source, node, "FullWeights"):
+            entry.full_weights = try alloc f64[source.array_count(weights)] in memory.heap
+            try jobs.push(ArrayJob(weights, Element.real64, bytes_of[f64](entry.full_weights)))
+        for shape_index in 0..<scene.child_count(channel):
+            let shape_connection = scene.child_connection(channel, shape_index)
+            if shape_connection.property != absent or scene.kind(shape_connection.child) != Kind.geometry: continue
+            let shape_node = scene.objects.items[(usize)shape_connection.child].node
+            let indexes = array_node(source, shape_node, "Indexes") else continue
+            let offsets = array_node(source, shape_node, "Vertices") else continue
+            var target = ShapeTarget(indexes = empty_ints(), offsets = empty_reals(), offset_weights = empty_reals(), target = 1.0, effective = 0.0)
+            target.indexes = try alloc i32[source.array_count(indexes)] in memory.heap
+            errdefer target.release()
+            target.offsets = try alloc f64[source.array_count(offsets)] in memory.heap
+            try jobs.push(ArrayJob(indexes, Element.int32, bytes_of[i32](target.indexes)))
+            try jobs.push(ArrayJob(offsets, Element.real64, bytes_of[f64](target.offsets)))
+            try into.targets.push(target)
+            entry.count += 1
+        try into.channels.push(entry)
+
+func read_skin(scene: const Scene*, hierarchy: const Hierarchy*, deformer: u32, into: Deformation*, jobs: Growing[ArrayJob]*) -> !:
+    let source = scene.document
+    let node = scene.objects.items[(usize)deformer].node
+    if let kind = source.child(node, "SkinningType"):
+        match source.text(kind, 0) else "":
+            "DualQuaternion": into.skinning = Skinning.dual_quaternion
+            "Blend": into.skinning = Skinning.blended
+            "Rigid": into.skinning = Skinning.rigid
+            _: into.skinning = Skinning.linear
+    if let indexes = array_node(source, node, "Indexes"):
+        if let weights = array_node(source, node, "BlendWeights"):
+            into.dq_indexes = try alloc i32[source.array_count(indexes)] in memory.heap
+            into.dq_weights = try alloc f64[source.array_count(weights)] in memory.heap
+            try jobs.push(ArrayJob(indexes, Element.int32, bytes_of[i32](into.dq_indexes)))
+            try jobs.push(ArrayJob(weights, Element.real64, bytes_of[f64](into.dq_weights)))
+    for index in 0..<scene.child_count(deformer):
+        let connection = scene.child_connection(deformer, index)
+        if connection.property != absent or not is_deformer(scene, connection.child): continue
+        let cluster = connection.child
+        if scene.subclass(cluster) != "Cluster": continue
+        let cluster_node = scene.objects.items[(usize)cluster].node
+        # Its bone: the model connected to it.
+        var bone = absent
+        for bone_index in 0..<scene.child_count(cluster):
+            let link = scene.child_connection(cluster, bone_index)
+            if link.property != absent: continue
+            if let model = hierarchy.model(link.child):
+                bone = model
+                break
+        var entry = SkinCluster(bone = bone, indexes = empty_ints(), weights = empty_reals(), transform = empty_reals(), link = empty_reals(), matrix = Matrix4())
+        errdefer entry.release()
+        if let indexes = array_node(source, cluster_node, "Indexes"):
+            if let weights = array_node(source, cluster_node, "Weights"):
+                entry.indexes = try alloc i32[source.array_count(indexes)] in memory.heap
+                entry.weights = try alloc f64[source.array_count(weights)] in memory.heap
+                try jobs.push(ArrayJob(indexes, Element.int32, bytes_of[i32](entry.indexes)))
+                try jobs.push(ArrayJob(weights, Element.real64, bytes_of[f64](entry.weights)))
+        if let transform = array_node(source, cluster_node, "Transform"):
+            entry.transform = try alloc f64[source.array_count(transform)] in memory.heap
+            try jobs.push(ArrayJob(transform, Element.real64, bytes_of[f64](entry.transform)))
+        # The bone's bind: TransformLink, else the bind pose's matrix for it.
+        var link_node = array_node(source, cluster_node, "TransformLink")
+        if link_node == none and bone != absent: link_node = bind_pose_matrix(scene, hierarchy.models.items[(usize)bone].object)
+        if let link = link_node:
+            entry.link = try alloc f64[source.array_count(link)] in memory.heap
+            try jobs.push(ArrayJob(link, Element.real64, bytes_of[f64](entry.link)))
+        try into.clusters.push(entry)
+
+## The Matrix node of a bind pose's PoseNode for `object`, if a pose has
+## one.
+func bind_pose_matrix(scene: const Scene*, object: u32) -> u32?:
+    let source = scene.document
+    let id = scene.objects.items[(usize)object].id
+    for pose in 1..<(u32)scene.objects.count:
+        if scene.kind(pose) != Kind.pose or scene.subclass(pose) != "BindPose": continue
+        let node = scene.objects.items[(usize)pose].node
+        var cursor = source.first_child(node)
+        while let child = cursor:
+            cursor = source.next_sibling(node, child)
+            if source.name(child) != "PoseNode": continue
+            let target = source.child(child, "Node") else continue
+            let found = source.property(target, 0) else continue
+            var matches = false
+            if found.kind == 'S':
+                # FBX 6 names the node: "Model::Name".
+                matches = scene.legacy and object_key_matches(scene, object, source.data[found.offset..<found.offset + found.size])
+            else:
+                matches = (scalar_integer(found) else -1) == id and not scene.legacy
+            if matches: return array_node(source, child, "Matrix")
+    return none
+
+## Whether FBX 6 object `object` has key `key`.
+func object_key_matches(scene: const Scene*, object: u32, key: const u8[]) -> bool:
+    let found = scene.objects.items[(usize)object]
+    if found.key == absent: return false
+    let property = &scene.document.properties.items[(usize)found.key]
+    return (str)scene.document.data[property.offset..<property.offset + property.size] == (str)key
+
+## Deformer or SubDeformer objects (exporters use either for clusters and
+## channels; the subclass says what they are).
+func is_deformer(scene: const Scene*, object: u32) -> bool:
+    let kind = scene.kind(object)
+    return kind == Kind.deformer or kind == Kind.subdeformer
+
+## A 4x4 FBX matrix (16 f64, column by column) as an affine Matrix4, or none
+## when it has fewer values.
+func matrix_of(values: const f64[]) -> Matrix4?:
+    if values.length < 16: return none
+    return Matrix4(Vector3(values[0], values[1], values[2]), Vector3(values[4], values[5], values[6]), Vector3(values[8], values[9], values[10]), Vector3(values[12], values[13], values[14]))
+
+func all_zero(values: const f64[]) -> bool:
+    for value in values:
+        if value != 0.0: return false
+    return true

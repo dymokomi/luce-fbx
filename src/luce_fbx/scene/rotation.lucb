@@ -27,6 +27,99 @@ pub struct Quat:
     pub func is_identity() -> bool:
         return self.x == 0.0 and self.y == 0.0 and self.z == 0.0 and self.w == 1.0
 
+## The rotation `t` of the way from `a` to `b` (ufbx_quat_slerp).
+pub func slerp(a: Quat, b: Quat, t: f64) -> Quat:
+    var other = b
+    var dot = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w
+    if dot < 0.0:
+        dot = -dot
+        other = Quat(-b.x, -b.y, -b.z, -b.w)
+    let omega = math.acos(math.min(math.max(dot, 0.0), 1.0))
+    if omega <= 1.175494351e-38: return a
+    let reciprocal = 1.0 / math.sin(omega)
+    let af = math.sin((1.0 - t) * omega) * reciprocal
+    let bf = math.sin(t * omega) * reciprocal
+    let x = af * a.x + bf * other.x
+    let y = af * a.y + bf * other.y
+    let z = af * a.z + bf * other.z
+    let w = af * a.w + bf * other.w
+    let length = 1.0 / math.sqrt(x * x + y * y + z * z + w * w)
+    return Quat(x * length, y * length, z * length, w * length)
+
+## Euler angles in degrees of rotation `q` in `order` (ufbx_quat_to_euler,
+## its formulas generated for each order).
+pub func quat_euler(q: Quat, order: i64) -> Vector3:
+    let eps = 0.999999999
+    let qx = q.x
+    let qy = q.y
+    let qz = q.z
+    let qw = q.w
+    var vx: f64 = 0.0
+    var vy: f64 = 0.0
+    var vz: f64 = 0.0
+    var t: f64 = 0.0
+    if order == 0:
+        t = 2.0*(qw*qy - qx*qz)
+        if math.abs(t) < eps:
+            vy = math.asin(t)
+            vz = math.atan2(2.0*(qw*qz + qx*qy), 2.0*(qw*qw + qx*qx) - 1.0)
+            vx = -math.atan2(-2.0*(qw*qx + qy*qz), 2.0*(qw*qw + qz*qz) - 1.0)
+        else:
+            vy = (math.pi * 0.5 if t >= 0.0 else -math.pi * 0.5)
+            vz = math.atan2(-2.0*t*(qw*qx - qy*qz), t*(2.0*qw*qy + 2.0*qx*qz))
+            vx = 0.0
+    elif order == 1:
+        t = 2.0*(qw*qz + qx*qy)
+        if math.abs(t) < eps:
+            vz = math.asin(t)
+            vy = math.atan2(2.0*(qw*qy - qx*qz), 2.0*(qw*qw + qx*qx) - 1.0)
+            vx = -math.atan2(-2.0*(qw*qx - qy*qz), 2.0*(qw*qw + qy*qy) - 1.0)
+        else:
+            vz = (math.pi * 0.5 if t >= 0.0 else -math.pi * 0.5)
+            vy = math.atan2(2.0*t*(qw*qx + qy*qz), -t*(2.0*qx*qy - 2.0*qw*qz))
+            vx = 0.0
+    elif order == 2:
+        t = 2.0*(qw*qz - qx*qy)
+        if math.abs(t) < eps:
+            vz = math.asin(t)
+            vx = math.atan2(2.0*(qw*qx + qy*qz), 2.0*(qw*qw + qy*qy) - 1.0)
+            vy = -math.atan2(-2.0*(qw*qy + qx*qz), 2.0*(qw*qw + qx*qx) - 1.0)
+        else:
+            vz = (math.pi * 0.5 if t >= 0.0 else -math.pi * 0.5)
+            vx = math.atan2(-2.0*t*(qw*qy - qx*qz), t*(2.0*qw*qz + 2.0*qx*qy))
+            vy = 0.0
+    elif order == 3:
+        t = 2.0*(qw*qx + qy*qz)
+        if math.abs(t) < eps:
+            vx = math.asin(t)
+            vz = math.atan2(2.0*(qw*qz - qx*qy), 2.0*(qw*qw + qy*qy) - 1.0)
+            vy = -math.atan2(-2.0*(qw*qy - qx*qz), 2.0*(qw*qw + qz*qz) - 1.0)
+        else:
+            vx = (math.pi * 0.5 if t >= 0.0 else -math.pi * 0.5)
+            vz = math.atan2(2.0*t*(qw*qy + qx*qz), -t*(2.0*qy*qz - 2.0*qw*qx))
+            vy = 0.0
+    elif order == 4:
+        t = 2.0*(qw*qx - qy*qz)
+        if math.abs(t) < eps:
+            vx = math.asin(t)
+            vy = math.atan2(2.0*(qw*qy + qx*qz), 2.0*(qw*qw + qz*qz) - 1.0)
+            vz = -math.atan2(-2.0*(qw*qz + qx*qy), 2.0*(qw*qw + qy*qy) - 1.0)
+        else:
+            vx = (math.pi * 0.5 if t >= 0.0 else -math.pi * 0.5)
+            vy = math.atan2(-2.0*t*(qw*qz - qx*qy), t*(2.0*qw*qx + 2.0*qy*qz))
+            vz = 0.0
+    elif order == 5:
+        t = 2.0*(qw*qy + qx*qz)
+        if math.abs(t) < eps:
+            vy = math.asin(t)
+            vx = math.atan2(2.0*(qw*qx - qy*qz), 2.0*(qw*qw + qz*qz) - 1.0)
+            vz = -math.atan2(-2.0*(qw*qz - qx*qy), 2.0*(qw*qw + qx*qx) - 1.0)
+        else:
+            vy = (math.pi * 0.5 if t >= 0.0 else -math.pi * 0.5)
+            vx = math.atan2(2.0*t*(qw*qz + qx*qy), -t*(2.0*qx*qz - 2.0*qw*qy))
+            vz = 0.0
+    return Vector3(vx * (180.0 / math.pi), vy * (180.0 / math.pi), vz * (180.0 / math.pi))
+
 ## A rotation of `degrees` about axis `axis` (0 X, 1 Y, 2 Z).
 func axis_rotation(axis: usize, degrees: f64) -> Quat:
     let half = degrees * (math.pi / 360.0)

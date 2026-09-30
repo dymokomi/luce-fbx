@@ -39,3 +39,4 @@ import luce_fbx.convert as convert
 pub type ImportOptions = convert.ImportOptions
 pub type Warnings = convert.Warnings
 pub let import_document = convert.import_document
+pub type Animation = scene.Animation

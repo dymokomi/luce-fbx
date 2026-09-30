@@ -20,7 +20,12 @@ print(Fbx.warnings())
 - with `keep_hierarchy`, every model's mesh stays in its own space, placed by
   an instance row;
 - `convert_units` turns the file Y-up and scales it to meters;
-- `normals` imports the file's normals as `N`.
+- `normals` imports the file's normals as `N`;
+- `time` (seconds) or `frame` evaluates the first animation stack there;
+- `deform` applies blend shapes and skins.
+
+`Fbx.info(path)` summarizes a file: version, axes, units, frame rate, the
+animation's time span and object counts.
 
 [docs/MAPPING.md](docs/MAPPING.md) states the whole mapping and what is left
 out. [docs/PARITY.md](docs/PARITY.md) records the comparison with ufbx.
@@ -39,6 +44,9 @@ out. [docs/PARITY.md](docs/PARITY.md) records the comparison with ufbx.
   color sets, smoothing, edge and vertex creases, holes, edge visibility,
   materials) in every mapping and reference mode.
 - Line and NURBS curves, as geocore curves.
+- Animation at a time: curves with every interpolation, tangent and
+  extrapolation mode, and layers; blend shapes with in-betweens; linear, dual
+  quaternion and blended skins.
 
 ## How it is built
 

@@ -24,6 +24,9 @@ struct FillWork:
     var when_zero: bool
     ## Output chunks: faces, or points for the point domain.
     var chunk: usize
+    ## A skinned mesh's directions turn with its points' skin matrices:
+    ## 1 as normals, 2 as tangents, 0 not.
+    var turn: u8
 
 ## Elements per fill chunk.
 let fill_grain: usize = 8192
@@ -41,7 +44,9 @@ func put_numbers(mesh: Mesh*, build: const MeshBuild*, geometries: const MeshGeo
         let geometry = &geometries[source.geometry]
         let layer = layer_for(geometry, plan) else continue
         if layer.width < first + components: continue
-        var work = FillWork(geometry, build, &source, layer, plan.domain, out, first, components, scale, no_integers, no_bits, false, 0)
+        var turn: u8 = 0
+        if geometry.world_space and directional(plan.kind): turn = 1 if plan.kind == LayerKind.normal else 2
+        var work = FillWork(geometry, build, &source, layer, plan.domain, out, first, components, scale, no_integers, no_bits, false, 0, turn)
         run_fill(&work)
     try put_attribute(mesh, attribute)
 
@@ -56,7 +61,7 @@ func put_integers(mesh: Mesh*, build: const MeshBuild*, geometries: const MeshGe
     for source in build.sources.view():
         let geometry = &geometries[source.geometry]
         let layer = layer_for(geometry, plan) else continue
-        var work = FillWork(geometry, build, &source, layer, plan.domain, no_floats, 0, 1, 1.0, out, no_bits, false, 0)
+        var work = FillWork(geometry, build, &source, layer, plan.domain, no_floats, 0, 1, 1.0, out, no_bits, false, 0, 0)
         run_fill(&work)
     try put_attribute(mesh, attribute)
 
@@ -70,7 +75,7 @@ func put_face_group(mesh: Mesh*, build: const MeshBuild*, geometries: const Mesh
     for source in build.sources.view():
         let geometry = &geometries[source.geometry]
         let layer = layer_for(geometry, plan) else continue
-        var work = FillWork(geometry, build, &source, layer, Domain.face, no_floats, 0, 1, 1.0, no_integers, bits, false, 0)
+        var work = FillWork(geometry, build, &source, layer, Domain.face, no_floats, 0, 1, 1.0, no_integers, bits, false, 0, 0)
         run_fill(&work)
     try put_attribute(mesh, attribute)
 
@@ -100,7 +105,7 @@ func fill_points(context: void*?, index: usize):
     let first = index * fill_grain
     let end = first + fill_grain if count - first > fill_grain else count
     for point in first..<end:
-        write_value(work, work.source.point_base + point, point)
+        write_value(work, work.source.point_base + point, point, point)
 
 ## Chunk `index` of the source's merged faces: each face's value, or each
 ## of its corners'.
@@ -117,7 +122,8 @@ func fill_faces(context: void*?, index: usize):
     for face in first..<end:
         let from_face = (usize)face_source[face]
         if work.domain == Domain.face:
-            write_value(work, face, from_face if mapping == Mapping.polygon else 0)
+            let first_point = (usize)point_at(indices, (usize)corner_source[(usize)offsets[face]])
+            write_value(work, face, from_face if mapping == Mapping.polygon else 0, first_point)
             continue
         for corner in (usize)offsets[face]..<(usize)offsets[face + 1]:
             let vertex = (usize)corner_source[corner]
@@ -127,11 +133,11 @@ func fill_faces(context: void*?, index: usize):
                 .vertex: element = (usize)point_at(indices, vertex)
                 .polygon: element = from_face
                 _: element = 0
-            write_value(work, corner, element)
+            write_value(work, corner, element, (usize)point_at(indices, vertex))
 
 ## Write the layer value of `element` (through its index) as output element
 ## `at`.
-func write_value(work: FillWork*, at: usize, element: usize):
+func write_value(work: FillWork*, at: usize, element: usize, point: usize):
     let layer = work.layer
     let value = layer.value_of(element) else return
     if work.bits.length > 0:
@@ -142,5 +148,13 @@ func write_value(work: FillWork*, at: usize, element: usize):
         work.integers[at] = layer.integers[value]
         return
     let components = work.components
+    let base = value * layer.width + work.first
+    if work.turn != 0 and components == 3:
+        let v = Vector3((f64)layer.values[base], (f64)layer.values[base + 1], (f64)layer.values[base + 2])
+        let turned = skinned_direction(work.geometry.deformation.linear.view(), point, v, work.turn == 1)
+        work.out[at * 3] = (f32)turned.x
+        work.out[at * 3 + 1] = (f32)turned.y
+        work.out[at * 3 + 2] = (f32)turned.z
+        return
     for k in 0..<components:
-        work.out[at * components + k] = layer.values[value * layer.width + work.first + k] * work.scale
+        work.out[at * components + k] = layer.values[base + k] * work.scale

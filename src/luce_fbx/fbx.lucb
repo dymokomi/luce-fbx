@@ -2,11 +2,12 @@
 ## as luce-geocore GeometrySets. Everything here is a thin entry point; the
 ## work is in document/, scene/ and convert/.
 import interop
+import math
 import memory
 import luce_fbx.source as source
 import luce_fbx.convert as convert
 from luce_fbx.document import Document
-from luce_fbx.scene import Scene
+from luce_fbx.scene import Scene, Animation, absent
 from geocore import GeometrySet
 from geocore_kernel import adopt_set
 from geocore_growing import Growing
@@ -24,23 +25,69 @@ pub struct Fbx:
     ## model's mesh as an instance in its own space instead; `instancing`
     ## loads a mesh several models share once, as instances;
     ## `convert_units` turns the file Y-up and scales it to meters;
-    ## `normals` imports the file's normals as `N`. What was left out is in
+    ## `normals` imports the file's normals as `N`. `time` (seconds) or
+    ## `frame` (at the file's frame rate) evaluates the first animation stack
+    ## there; without either the file's values are read as they are.
+    ## `deform` applies blend shapes and skins. What was left out is in
     ## `warnings()`.
-    pub static func load(path: str, keep_hierarchy: bool = false, instancing: bool = true, convert_units: bool = false, normals: bool = true) -> interop.Reference[GeometrySet]!:
+    pub static func load(path: str, keep_hierarchy: bool = false, instancing: bool = true, convert_units: bool = false, normals: bool = true, time: f64 = math.nan, frame: f64 = math.nan, deform: bool = true) -> interop.Reference[GeometrySet]!:
         let data = try source.read(path)
         defer free(data) in memory.heap
         var document = try Document.parse(data)
         defer document.close()
         var warnings = convert.Warnings()
         defer warnings.close()
-        let options = convert.ImportOptions(keep_hierarchy = keep_hierarchy, instancing = instancing, convert_units = convert_units, normals = normals)
+        let options = convert.ImportOptions(keep_hierarchy = keep_hierarchy, instancing = instancing, convert_units = convert_units, normals = normals, time = time, frame = frame, deform = deform)
         let set = try convert.import_document(&document, &options, &warnings)
         remember(&warnings)
         return try adopt_set(set)
 
+    ## A summary of the FBX file at `path`, one "key: value" per line:
+    ## version, encoding, creator, up axis, meters per unit, frame rate, the
+    ## first animation stack's time span (seconds, and frames), and object
+    ## counts by class.
+    pub static func info(path: str) -> interop.Owned[str]!:
+        let data = try source.read(path)
+        defer free(data) in memory.heap
+        var document = try Document.parse(data)
+        defer document.close()
+        var scene = try Scene.of(&document)
+        defer scene.close()
+        var animation = try scene.animation()
+        defer animation.close()
+        var out = Growing[u8]()
+        defer out.close()
+        try describe(&document, &scene, &animation, &out)
+        return try interop.copy_text((str)out.view())
+
     ## The warnings of this thread's last load, one per line.
     pub static func warnings() -> interop.Owned[str]!:
         return try interop.copy_text((str)last_warnings[..<last_length])
+
+## `Fbx.info`'s lines.
+func describe(document: const Document*, scene: const Scene*, animation: const Animation*, out: Growing[u8]*) -> !:
+    let s = scene.settings
+    var line: u8[512] = ---
+    try append(out, try format(line, f"version: {document.version}\n"))
+    try append(out, "encoding: binary\n" if document.binary else "encoding: ascii\n")
+    try append(out, try format(line, f"upAxis: {s.up.text()}\nfrontAxis: {s.front.text()}\nmetersPerUnit: {s.meters}\nframeRate: {s.frame_rate}\n"))
+    if animation.stack != absent:
+        try append(out, try format(line, f"animation: {scene.name(animation.stack)}\nstart: {animation.start}\nstop: {animation.stop}\nstartFrame: {animation.start * s.frame_rate}\nstopFrame: {animation.stop * s.frame_rate}\n"))
+    # Objects by class, in first-seen order.
+    var classes = Growing[u32]()
+    defer classes.close()
+    for object in 1..<(u32)scene.objects.count:
+        var seen = false
+        for earlier in classes.view(): seen = seen or scene.class(earlier) == scene.class(object)
+        if not seen: try classes.push(object)
+    for first in classes.view():
+        var count: usize = 0
+        for object in 1..<(u32)scene.objects.count:
+            if scene.class(object) == scene.class(first): count += 1
+        try append(out, try format(line, f"{scene.class(first)}: {count}\n"))
+
+func append(out: Growing[u8]*, text: str) -> !:
+    for byte in text.bytes: try out.push(byte)
 
 func remember(warnings: const convert.Warnings*):
     let text = warnings.text.view()

@@ -10,7 +10,7 @@ import geocore_parallel as pool
 import luce_fbx.errors as errors
 import luce_fbx.budget as budget
 from luce_fbx.document import Document, Property, ArrayJob, Element, element_size, scalar_integer
-from luce_fbx.scene import Scene, Hierarchy, Kind, Model, Settings, Axis, absent
+from luce_fbx.scene import Scene, Hierarchy, Kind, Model, Settings, Axis, Animation, Trs, Quat, absent
 from geocore import Vector3, Matrix4, Mesh
 from geocore_kernel import Float3, Attribute, AttributeStore, Domain, DataType, Role, TableBuilder, GeometrySet, Placement, assembled, put_attribute, mesh_dispose, set_put, set_put_detail, empty_set, dispose_set, mesh_component, Instances, new_instances, instances_component, corner_edge_span, Curves, curves_assembled, curves_type
 from geocore_growing import Growing
@@ -27,6 +27,13 @@ pub struct ImportOptions:
     pub var convert_units: bool = false
     ## Import the file's normals as `N` (off: geocore's face normals).
     pub var normals: bool = true
+    ## The time in seconds animation is evaluated at; NaN reads the file's
+    ## properties as they are (no animation).
+    pub var time: f64 = math.nan
+    ## Or a frame at the file's frame rate (used when `time` is NaN).
+    pub var frame: f64 = math.nan
+    ## Apply blend shapes and skins.
+    pub var deform: bool = true
 
 ## Messages about what a load left out or changed, one line each, each once.
 pub struct Warnings:

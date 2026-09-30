@@ -65,6 +65,43 @@ vertex.
   curve over the knots' inner range.
 - Each curve's model path is its `path`.
 
+## Animation and deformers
+
+With a `time` (seconds) or `frame` (at the file's frame rate), the first
+AnimationStack is evaluated there, as ufbx evaluates it:
+
+- keys and tangents decode as ufbx decodes them: constant (previous or next),
+  linear and cubic keys; automatic (with bias, time-independent and
+  clamp-progressive), TCB and user tangents; weighted tangents; ASCII files'
+  attribute bits from FBX 7.2 on;
+- a cubic segment is a Bezier in time and value, solved for its time;
+- before and after the keys, curves hold, extend their slope, repeat, repeat
+  relative or mirror, as many times as their Repetition says;
+- layers combine in order: the first replaces the property's value, later
+  ones override, blend by their weight (animated in the layer itself) or add;
+  rotations and scales compose as rotations (quaternion slerp) and products
+  where the layer's accumulation mode asks;
+- every transform property of a model animates: translation, rotation,
+  scaling, pre- and post-rotation, pivots and offsets.
+
+Without a time, the file's property values are read as they are. In both
+cases (and unless `deform` is off) deformers apply:
+
+- **Blend shapes**: each BlendShapeChannel's shapes are keyframes at their
+  FullWeights; the two around its DeformPercent share it linearly (in-between
+  shapes), and their offsets are added to the mesh's points. Blender's binary
+  exporter writes FullWeights as per-offset weights, which are applied so.
+- **Skins**: each cluster maps the mesh to its bone (Transform, the geometric
+  transform, the bone's world matrix; TransformLink or the bind pose when
+  Transform is missing). A point takes its clusters' matrices averaged by
+  weight, dual quaternions for dual quaternion skins, or both by BlendWeights
+  for blended ones, normalized by its total weight; a point without weights
+  keeps the mesh's world transform. A skinned mesh is placed in world space,
+  never instanced, and its normals and tangents turn with each point's skin
+  matrix.
+
+The details record `fbx.time` when a time is given.
+
 ## Scene settings
 
 The set's detail attributes record `fbx.upAxis` and `fbx.frontAxis` ("+Y",
@@ -74,7 +111,8 @@ right-handed and scaled to meters, and the details say +Y and 1.
 
 ## What is left out
 
-- Animation, blend shapes and skins (the rest pose is imported).
+- Animation beyond one time: one pose is imported (FBX 6 takes are not read).
+- Skeletons as data: bones place skinned points but are not imported.
 - Cameras, lights, constraints and other node attributes.
 - Material properties and textures (only the material name).
 - NURBS surfaces and patches.

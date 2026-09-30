@@ -22,13 +22,14 @@ pub struct Settings:
     ## The time span, in seconds.
     pub var start: f64 = 0.0
     pub var stop: f64 = 0.0
+    ## KTime ticks per second: 46186158000, or 141120000 where the header
+    ## opts in to FBX 8's units (TCDefinition other than 127).
+    pub var ticks: f64 = 46186158000.0
 
 ## Frames per second of each TimeMode (FbxTime::EMode).
 let mode_rates: f64[18] = [30.0, 120.0, 100.0, 60.0, 50.0, 48.0, 30.0, 30.0, 29.97, 29.97, 25.0, 24.0, 1000.0, 23.976, 24.0, 96.0, 72.0, 59.94]
 ## The TimeMode of a custom rate.
 let custom_mode: i64 = 14
-## KTime ticks per second.
-pub let ticks_per_second: f64 = 46186158000.0
 
 extend Scene:
     mutating func read_settings() -> !:
@@ -46,9 +47,22 @@ extend Scene:
         if mode >= 0 and mode < 18 and mode != custom_mode: settings.frame_rate = mode_rates[(usize)mode]
         if self.setting("TimeMode") == none:
             if let rate = self.legacy_frame_rate(): settings.frame_rate = rate
-        settings.start = self.setting_number("TimeSpanStart", 0.0) / ticks_per_second
-        settings.stop = self.setting_number("TimeSpanStop", 0.0) / ticks_per_second
+        settings.ticks = self.ktime()
+        settings.start = self.setting_number("TimeSpanStart", 0.0) / settings.ticks
+        settings.stop = self.setting_number("TimeSpanStop", 0.0) / settings.ticks
         self.settings = settings
+
+    ## KTime ticks per second (ufbx's rule): the new units only when a
+    ## header of version 1004 or later names a TCDefinition other than 127.
+    func ktime() -> f64:
+        let source = self.document
+        let header = source.child(0, "FBXHeaderExtension") else return 46186158000.0
+        let version = source.child_integer(header, "FBXHeaderVersion", 0) else 0
+        let flags = source.child(header, "OtherFlags") else return 46186158000.0
+        let definition = source.child(flags, "TCDefinition") else return 46186158000.0
+        let value = source.integer(definition, 0) else 127
+        if version >= 1004 and value != 127: return 141120000.0
+        return 46186158000.0
 
     ## FBX 6 and older: the frame rate of the `Settings` node (`FrameRate:
     ## "30"`), under Version5 or at the top.

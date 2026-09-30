@@ -1,0 +1,305 @@
+## Applying blend shapes, then the skin, to a mesh's points, as ufbx's
+## ufbxi_evaluate_skinning does: blend shapes add their offsets in the mesh's
+## own space; the skin places every point in world space, so a skinned
+## mesh's uses place it by the unit conversion alone.
+##
+## - A channel's weight is DeformPercent / 100 (animated at the time). Its
+##   shapes are keyframes at their full weights; the two around the weight
+##   share it linearly (ufbxi_update_blend_channel), from zero below the
+##   first.
+## - A cluster moves the mesh from its bind space to its bone:
+##   geometry-to-world = bone world * Transform (* the geometric transform);
+##   without a Transform, TransformLink's inverse * the mesh's world. A point
+##   takes its clusters' matrices averaged by weight (linear), or their dual
+##   quaternions (ufbx_get_skin_vertex_matrix), normalized by the total
+##   weight; a point without weights keeps the mesh's world transform.
+
+## Deform `geometry`'s points in place; `model` is the hierarchy model of its
+## first use.
+func deform(scene: const Scene*, hierarchy: const Hierarchy*, animation: const Animation*?, time: f64, geometry: MeshGeometry*, model: u32) -> !:
+    let deformation = &geometry.deformation
+    for index in 0..<deformation.channels.count:
+        try blend(scene, animation, time, geometry, index)
+    if deformation.skinned and deformation.clusters.count > 0:
+        try skin(hierarchy, geometry, model)
+        geometry.world_space = true
+
+## Add channel `index`'s shapes at their effective weights.
+func blend(scene: const Scene*, animation: const Animation*?, time: f64, geometry: MeshGeometry*, index: usize) -> !:
+    let deformation = &geometry.deformation
+    let channel = deformation.channels.items[index]
+    var percent = scene.number(channel.object, "DeformPercent", 0.0)
+    if scene.find(channel.object, "DeformPercent") == none:
+        # Blender writes DeformPercent as a child node, not a property.
+        if let node = scene.document.child(scene.objects.items[(usize)channel.object].node, "DeformPercent"):
+            percent = scene.document.real(node, 0) else 100.0
+    if let animated = animation: percent = animated.evaluate_number(scene, channel.object, "DeformPercent", time, percent)
+    let weight = percent * 0.01
+    let targets = deformation.targets.items[channel.first..<channel.first + channel.count]
+    for at in 0..<targets.length:
+        targets[at].effective = 0.0
+        if scene.blender_binary:
+            # Blender's FullWeights weigh each offset of its one shape.
+            targets[at].target = 1.0
+            continue
+        targets[at].target = channel.full_weights[at] / 100.0 if at < channel.full_weights.length else 1.0
+    # By target weight (stable).
+    for at in 1..<targets.length:
+        let item = targets[at]
+        var slot = at
+        while slot > 0 and targets[slot - 1].target > item.target:
+            targets[slot] = targets[slot - 1]
+            slot -= 1
+        targets[slot] = item
+    effective_weights(targets, weight)
+    let points = geometry.point_count()
+    for target in targets:
+        if target.effective == 0.0: continue
+        let count = math.min((f64)target.indexes.length, (f64)(target.offsets.length // 3))
+        let per_offset = scene.blender_binary and channel.full_weights.length == (usize)count
+        for at in 0..<(usize)count:
+            let point = target.indexes[at]
+            if point < 0 or (usize)point >= points: continue
+            let scaled = target.effective * (channel.full_weights[at] / 100.0 if per_offset else 1.0)
+            for k in 0..<(usize)3:
+                geometry.vertices[(usize)point * 3 + k] += target.offsets[at * 3 + k] * scaled
+
+## Share `weight` between the keyframes around it (ufbxi_update_blend_channel):
+## the last below zero or the zero key, and the first above the weight.
+func effective_weights(targets: ShapeTarget[], weight: f64):
+    if targets.length == 0: return
+    var last_negative: i64 = -1
+    for (at, target) in targets.indexed():
+        if target.target < 0.0: last_negative = (i64)at
+    # Keyframe -1 is the implicit zero key.
+    var previous: i64 = -1
+    var next: i64 = -1
+    if weight > 0.0:
+        if last_negative >= 0: previous = last_negative
+        var at = last_negative + 1
+        while at < (i64)targets.length:
+            previous = next
+            next = at
+            if targets[(usize)at].target > weight: break
+            at += 1
+    else:
+        if last_negative + 1 < (i64)targets.length: previous = last_negative + 1
+        var at = last_negative
+        while at >= 0:
+            previous = next
+            next = at
+            if targets[(usize)at].target < weight: break
+            at -= 1
+    let a = targets[(usize)previous].target if previous >= 0 else 0.0
+    let b = targets[(usize)next].target if next >= 0 else 0.0
+    let delta = b - a
+    if delta == 0.0: return
+    let t = (weight - a) / delta
+    if previous >= 0: targets[(usize)previous].effective = 1.0 - t
+    if next >= 0: targets[(usize)next].effective = t
+
+## One cluster's weight on a point.
+struct Influence:
+    var cluster: u32
+    var weight: f64
+
+struct SkinWork:
+    var vertices: f64[]
+    var linear: f32[]
+    var starts: const u32[]
+    var influences: const Influence[]
+    var clusters: const SkinCluster[]
+    var rigid: const Trs[]
+    var dq: const f64[]
+    var fallback: Matrix4
+
+## Place every point by its clusters.
+func skin(hierarchy: const Hierarchy*, geometry: MeshGeometry*, model: u32) -> !:
+    let deformation = &geometry.deformation
+    let entry = &hierarchy.models.items[(usize)model]
+    # Each cluster's geometry-to-world matrix and its decomposition.
+    var rigid = Growing[Trs]()
+    defer rigid.close()
+    for index in 0..<deformation.clusters.count:
+        let cluster = &deformation.clusters.items[index]
+        var to_bone = matrix_of(cluster.transform) else Matrix4()
+        let link = matrix_of(cluster.link) else Matrix4()
+        if cluster.transform.length < 16 or all_zero(cluster.transform):
+            let inverse = link.inverse() catch failure:
+                discard(failure)
+                recover Matrix4()
+            to_bone = inverse.multiply(entry.world)
+        to_bone = to_bone.multiply(entry.geometric)
+        cluster.matrix = (hierarchy.models.items[(usize)cluster.bone].world if cluster.bone != absent else link).multiply(to_bone)
+        try rigid.push(trs_of(&cluster.matrix))
+    # Influences per point, heaviest first.
+    let points = geometry.point_count()
+    var starts = Growing[u32]()
+    defer starts.close()
+    try starts.fill(points + 1, 0)
+    for cluster in deformation.clusters.view():
+        let count = math.min((f64)cluster.indexes.length, (f64)cluster.weights.length)
+        for at in 0..<(usize)count:
+            let point = cluster.indexes[at]
+            if point >= 0 and (usize)point < points: starts.items[(usize)point + 1] += 1
+    for at in 1..<starts.count: starts.items[at] += starts.items[at - 1]
+    var influences = Growing[Influence]()
+    defer influences.close()
+    try influences.fill((usize)starts.items[points], Influence(0, 0.0))
+    var fill = Growing[u32]()
+    defer fill.close()
+    try fill.assign(starts.items[..<points])
+    for (index, cluster) in deformation.clusters.view().indexed():
+        let count = math.min((f64)cluster.indexes.length, (f64)cluster.weights.length)
+        for at in 0..<(usize)count:
+            let point = cluster.indexes[at]
+            if point < 0 or (usize)point >= points: continue
+            influences.items[(usize)fill.items[(usize)point]] = Influence((u32)index, cluster.weights[at])
+            fill.items[(usize)point] += 1
+    for point in 0..<points:
+        sort_influences(influences.items[(usize)starts.items[point]..<(usize)starts.items[point + 1]])
+    # Dual quaternion weight per point.
+    var dq = Growing[f64]()
+    defer dq.close()
+    try dq.fill(points, 1.0 if deformation.skinning == Skinning.dual_quaternion else 0.0)
+    let blended = math.min((f64)deformation.dq_indexes.length, (f64)deformation.dq_weights.length)
+    for at in 0..<(usize)blended:
+        let point = deformation.dq_indexes[at]
+        if point >= 0 and (usize)point < points: dq.items[(usize)point] = deformation.dq_weights[at]
+    try deformation.linear.fill(points * 9, 0.0)
+    var work = SkinWork(geometry.vertices, deformation.linear.items[..<points * 9], starts.view(), influences.view(), deformation.clusters.view(), rigid.view(), dq.view(), entry.geometry_world)
+    pool.parallel_for(points, grain, skin_points, (void*)&work)
+
+func sort_influences(items: Influence[]):
+    for at in 1..<items.length:
+        let item = items[at]
+        var slot = at
+        while slot > 0 and items[slot - 1].weight < item.weight:
+            items[slot] = items[slot - 1]
+            slot -= 1
+        items[slot] = item
+
+func skin_points(context: void*?, first: usize, end: usize):
+    let work = (SkinWork*)(context else return)
+    for point in first..<end:
+        let m = skin_matrix(work, point)
+        let columns: Vector3[3] = [m.x, m.y, m.z]
+        for c in 0..<(usize)3:
+            work.linear[point * 9 + c * 3] = (f32)columns[c].x
+            work.linear[point * 9 + c * 3 + 1] = (f32)columns[c].y
+            work.linear[point * 9 + c * 3 + 2] = (f32)columns[c].z
+        let p = m.transform_point(Vector3(work.vertices[point * 3], work.vertices[point * 3 + 1], work.vertices[point * 3 + 2]))
+        work.vertices[point * 3] = p.x
+        work.vertices[point * 3 + 1] = p.y
+        work.vertices[point * 3 + 2] = p.z
+
+## A point's skinning matrix (ufbx_get_skin_vertex_matrix).
+func skin_matrix(work: const SkinWork*, point: usize) -> Matrix4:
+    let influences = work.influences[(usize)work.starts[point]..<(usize)work.starts[point + 1]]
+    let dq = work.dq[point]
+    var total: f64 = 0.0
+    var sum: f64[12] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    var q0: f64[4] = [0.0, 0.0, 0.0, 0.0]
+    var qe: f64[4] = [0.0, 0.0, 0.0, 0.0]
+    var qs = Vector3()
+    var first = Quat(0.0, 0.0, 0.0, 0.0)
+    for (index, influence) in influences.indexed():
+        let weight = influence.weight
+        total += weight
+        if dq > 0.0:
+            let t = work.rigid[(usize)influence.cluster]
+            var r = t.rotation
+            if index == 0: first = r
+            if first.x * r.x + first.y * r.y + first.z * r.z + first.w * r.w < 0.0: r = Quat(-r.x, -r.y, -r.z, -r.w)
+            # The dual part: half the translation as a quaternion, times r.
+            let e = Quat(0.5 * t.translation.x, 0.5 * t.translation.y, 0.5 * t.translation.z, 0.0).times(r)
+            q0 = [q0[0] + r.x * weight, q0[1] + r.y * weight, q0[2] + r.z * weight, q0[3] + r.w * weight]
+            qe = [qe[0] + e.x * weight, qe[1] + e.y * weight, qe[2] + e.z * weight, qe[3] + e.w * weight]
+            qs = qs.add(t.scale.multiply_scalar(weight))
+        if dq < 1.0:
+            let m = work.clusters[(usize)influence.cluster].matrix
+            let scaled = (1.0 - dq) * weight
+            let columns: Vector3[4] = [m.x, m.y, m.z, m.translation]
+            for c in 0..<(usize)4:
+                sum[c * 3] += columns[c].x * scaled
+                sum[c * 3 + 1] += columns[c].y * scaled
+                sum[c * 3 + 2] += columns[c].z * scaled
+    if total <= 0.0: return work.fallback
+    if math.abs(total - 1.0) > 1.0e-5:
+        let reciprocal = 1.0 / total if math.abs(total) > 1.0e-5 else 0.0
+        for k in 0..<(usize)4:
+            q0[k] *= reciprocal
+            qe[k] *= reciprocal
+        qs = qs.multiply_scalar(reciprocal)
+        for k in 0..<(usize)12: sum[k] *= reciprocal
+    var result = Matrix4(Vector3(sum[0], sum[1], sum[2]), Vector3(sum[3], sum[4], sum[5]), Vector3(sum[6], sum[7], sum[8]), Vector3(sum[9], sum[10], sum[11]))
+    if dq > 0.0:
+        let length = 1.0 / math.sqrt(q0[0] * q0[0] + q0[1] * q0[1] + q0[2] * q0[2] + q0[3] * q0[3])
+        let twice = 2.0 * length * length
+        var t = Trs()
+        t.rotation = Quat(q0[0] * length, q0[1] * length, q0[2] * length, q0[3] * length)
+        t.scale = qs
+        t.translation = Vector3(twice * (-qe[3] * q0[0] + qe[0] * q0[3] - qe[1] * q0[2] + qe[2] * q0[1]),
+                                twice * (-qe[3] * q0[1] + qe[0] * q0[2] + qe[1] * q0[3] - qe[2] * q0[0]),
+                                twice * (-qe[3] * q0[2] - qe[0] * q0[1] + qe[1] * q0[0] + qe[2] * q0[3]))
+        let d = t.matrix()
+        if dq < 1.0:
+            result = Matrix4(result.x.add(d.x.multiply_scalar(dq)), result.y.add(d.y.multiply_scalar(dq)), result.z.add(d.z.multiply_scalar(dq)), result.translation.add(d.translation.multiply_scalar(dq)))
+        else:
+            result = d
+    return result
+
+## Turn a direction at `point` by its skin matrix: a normal by the inverse
+## transpose (the cofactors; unit length restored), a tangent by the matrix.
+func skinned_direction(linear: const f32[], point: usize, v: Vector3, normal: bool) -> Vector3:
+    let at = point * 9
+    let x = Vector3((f64)linear[at], (f64)linear[at + 1], (f64)linear[at + 2])
+    let y = Vector3((f64)linear[at + 3], (f64)linear[at + 4], (f64)linear[at + 5])
+    let z = Vector3((f64)linear[at + 6], (f64)linear[at + 7], (f64)linear[at + 8])
+    var turned = Vector3()
+    if normal:
+        turned = y.cross(z).multiply_scalar(v.x).add(z.cross(x).multiply_scalar(v.y)).add(x.cross(y).multiply_scalar(v.z))
+    else:
+        turned = x.multiply_scalar(v.x).add(y.multiply_scalar(v.y)).add(z.multiply_scalar(v.z))
+    let length = turned.length()
+    if length > 0.0 and math.is_finite(length): return turned.multiply_scalar(1.0 / length)
+    return v
+
+## A matrix as translation, rotation and scale (ufbx_matrix_to_transform).
+func trs_of(m: const Matrix4*) -> Trs:
+    var t = Trs()
+    t.translation = m.translation
+    t.scale = Vector3(m.x.length(), m.y.length(), m.z.length())
+    var sign: f64[3] = [1.0, 1.0, 1.0]
+    if m.determinant() < 0.0:
+        if t.scale.x > 0.0: sign[0] = -1.0
+        elif t.scale.y > 0.0: sign[1] = -1.0
+        elif t.scale.z > 0.0: sign[2] = -1.0
+    let x = m.x.multiply_scalar(sign[0] / t.scale.x if t.scale.x > 0.0 else 0.0)
+    let y = m.y.multiply_scalar(sign[1] / t.scale.y if t.scale.y > 0.0 else 0.0)
+    let z = m.z.multiply_scalar(sign[2] / t.scale.z if t.scale.z > 0.0 else 0.0)
+    let trace = x.x + y.y + z.z
+    var q = Quat()
+    if trace > 0.0:
+        let a = math.sqrt(math.max(0.0, trace + 1.0))
+        let b = 0.5 / a if a != 0.0 else 0.0
+        q = Quat((y.z - z.y) * b, (z.x - x.z) * b, (x.y - y.x) * b, 0.5 * a)
+    elif x.x > y.y and x.x > z.z:
+        let a = math.sqrt(math.max(0.0, 1.0 + x.x - y.y - z.z))
+        let b = 0.5 / a if a != 0.0 else 0.0
+        q = Quat(0.5 * a, (y.x + x.y) * b, (z.x + x.z) * b, (y.z - z.y) * b)
+    elif y.y > z.z:
+        let a = math.sqrt(math.max(0.0, 1.0 - x.x + y.y - z.z))
+        let b = 0.5 / a if a != 0.0 else 0.0
+        q = Quat((y.x + x.y) * b, 0.5 * a, (z.y + y.z) * b, (z.x - x.z) * b)
+    else:
+        let a = math.sqrt(math.max(0.0, 1.0 - x.x - y.y + z.z))
+        let b = 0.5 / a if a != 0.0 else 0.0
+        q = Quat((z.x + x.z) * b, (z.y + y.z) * b, 0.5 * a, (x.y - y.x) * b)
+    let length = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w
+    if math.abs(length - 1.0) > 1.0e-5:
+        if math.abs(length) <= 1.0e-5: q = Quat()
+        else: q = Quat(q.x / length, q.y / length, q.z / length, q.w / length)
+    t.scale = Vector3(t.scale.x * sign[0], t.scale.y * sign[1], t.scale.z * sign[2])
+    t.rotation = q
+    return t

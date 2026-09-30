@@ -12,7 +12,8 @@ The corpus is ufbx's `data/` (691 files from Maya, 3ds Max, Blender,
 MotionBuilder, ZBrush, Revit and synthetic cases, FBX 2000 to 8000, ASCII and
 binary) and Blender's FBX import tests (96 files).
 
-2026-09-30, meshes at rest (no skinning or blend shapes):
+2026-09-30. Meshes as ufbx loads them (blend shapes and skins applied at the
+file's pose), world matrices and placed points:
 
 | Outcome | Files |
 |---|---:|
@@ -32,3 +33,12 @@ binary) and Blender's FBX import tests (96 files).
   - one node kind (a Blender armature's root: ours "bone", ufbx "null").
 - **luce-fbx reads, ufbx rejects:** synthetic files ufbx refuses on purpose
   (cycles, depth limits), which luce-fbx reads.
+
+At time 1 s (the first animation stack evaluated, deformers applied), node
+matrices and placed points: 711 of 787 files match. Every FBX 7 file with
+animation matches (curves, extrapolation, layers, blend shape in-betweens,
+linear, dual quaternion and blended skins); the mismatches are FBX 6 files,
+whose takes luce-fbx does not read, and the synthetic and n-gon files above.
+
+Attribute sums are compared too, except normals of skinned meshes: ufbx
+reports a mesh's file normals, luce-fbx turns them with the skin.

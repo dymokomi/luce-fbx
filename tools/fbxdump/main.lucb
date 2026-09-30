@@ -3,11 +3,16 @@
 ## `attr`, `mat`, `curve`; numbers as %.6g). A local parity script compares
 ## the two over a corpus of FBX files. Fields are separated by tabs.
 ##
-##     fbxdump FILE
+##     fbxdump FILE [--time SECONDS] [--rest]
+##
+## --time evaluates animation at a time; --rest leaves blend shapes and
+## skins out.
 import c
 import memory
 import geocore_parallel as pool
-from fbx_kernel import Document, Scene, Hierarchy, Kind, ImportOptions, Warnings, import_document, read_file
+from fbx_kernel import Document, Scene, Hierarchy, Kind, Animation, ImportOptions, Warnings, import_document, read_file
+import math
+import strings
 from geocore import Matrix4, Vector3, Mesh
 from geocore_kernel import GeometrySet, Attribute, Domain, DataType, Float3, Curves, set_mesh, set_find, curves_type, dispose_set, point_span, mesh_origin, offset_span, corner_span, attribute_entry
 from geocore_growing import Growing
@@ -27,7 +32,18 @@ pub func main(arguments: str[]) -> i32!:
         print(f"error {failure.message}")
         return 1
     defer scene.close()
-    var hierarchy = scene.hierarchy() catch failure:
+    var time = math.nan
+    var rest = false
+    for at in 2..<arguments.length:
+        if arguments[at] == "--time" and at + 1 < arguments.length: time = try strings.parse_f64(arguments[at + 1])
+        if arguments[at] == "--rest": rest = true
+    var animation = scene.animation() catch failure:
+        print(f"error {failure.message}")
+        return 1
+    defer animation.close()
+    var animated: const Animation*? = none
+    if not math.is_nan(time): animated = &animation
+    var hierarchy = scene.hierarchy(animated, time) catch failure:
         print(f"error {failure.message}")
         return 1
     defer hierarchy.close()
@@ -45,7 +61,7 @@ pub func main(arguments: str[]) -> i32!:
     # The imported mesh, every model merged (no instances), by path.
     var warnings = Warnings()
     defer warnings.close()
-    let options = ImportOptions(keep_hierarchy = false, instancing = false, convert_units = false, normals = true)
+    let options = ImportOptions(keep_hierarchy = false, instancing = false, convert_units = false, normals = true, time = time, deform = not rest)
     let set = import_document(&document, &options, &warnings) catch failure:
         print(f"error import {failure.message}")
         return 1

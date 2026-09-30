@@ -1,0 +1,386 @@
+## Animation: the first AnimationStack, its AnimationLayers, their
+## AnimationCurveNodes (an animated property of an object: OP-connected to
+## it, with default component values `d|X`, `d|Y`, `d|Z`) and the
+## AnimationCurves driving each component (OP-connected to the node).
+## Everything follows ufbx: keys and tangents are decoded as
+## ufbxi_read_animation_curve decodes them (constant, linear and cubic keys;
+## auto, TCB and user tangents with weights), curves evaluate as
+## ufbx_evaluate_curve (a cubic Bezier segment solved for its time), with
+## pre- and post-extrapolation, and layers combine as ufbxi_evaluate_props:
+## the first replaces the rest value, the next add (additive), blend by
+## their weight (override passthrough) or replace (override). Rotations and
+## scales blend component-wise (ufbx composes them as quaternions and
+## products when a layer asks; that is not done here).
+
+
+pub enum Interpolation as u8:
+    constant_previous = 0
+    constant_next = 1
+    linear = 2
+    cubic = 3
+
+pub enum Extrapolation as u8:
+    constant = 0
+    repeat = 1
+    mirror = 2
+    slope = 3
+    repeat_relative = 4
+
+pub struct Key:
+    pub var time: f64
+    pub var value: f64
+    pub var interpolation: Interpolation
+    ## Tangents: time and value offsets to the Bezier handles.
+    pub var left_dx: f64
+    pub var left_dy: f64
+    pub var right_dx: f64
+    pub var right_dy: f64
+
+pub struct AnimCurve:
+    pub var first: usize
+    pub var count: usize
+    pub var pre: Extrapolation
+    pub var pre_repeat: i64
+    pub var post: Extrapolation
+    pub var post_repeat: i64
+
+## One animated property on one layer.
+pub struct AnimValue:
+    pub var layer: usize
+    pub var target: u32
+    ## The property's name, in the document (a string property).
+    pub var name_node: u32
+    pub var name_index: usize
+    pub var curves: u32[3]
+    pub var defaults: f64[3]
+
+pub struct AnimLayer:
+    pub var object: u32
+    pub var weight: f64
+    pub var additive: bool
+    pub var blended: bool
+    ## Rotations combine as rotations, scales as products (the layer's
+    ## accumulation modes 0), else component by component.
+    pub var compose_rotation: bool
+    pub var compose_scale: bool
+
+pub struct Animation:
+    ## The stack (absent: no animation).
+    pub var stack: u32
+    pub var layers: Growing[AnimLayer]
+    pub var values: Growing[AnimValue]
+    pub var curves: Growing[AnimCurve]
+    pub var keys: Growing[Key]
+    ## The stack's time span, in seconds.
+    pub var start: f64
+    pub var stop: f64
+    ## KTime ticks per second (Settings.ticks).
+    pub var ticks: f64
+    ## Value indices sorted by target (stable: layer order kept per target).
+    var by_target: Growing[u32]
+
+    pub mutating func close():
+        self.layers.close()
+        self.values.close()
+        self.curves.close()
+        self.keys.close()
+        self.by_target.close()
+
+    ## The values of `target`: a range of by_target.
+    func target_range(target: u32) -> (usize, usize):
+        var low: usize = 0
+        var high = self.by_target.count
+        while low < high:
+            let middle = (low + high) // 2
+            if self.values.items[(usize)self.by_target.items[middle]].target < target: low = middle + 1
+            else: high = middle
+        var end = low
+        while end < self.by_target.count and self.values.items[(usize)self.by_target.items[end]].target == target: end += 1
+        return (low, end)
+
+    ## Whether any property of `target` is animated.
+    pub func touches(target: u32) -> bool:
+        let (first, end) = self.target_range(target)
+        return end > first
+
+    ## Whether property `name` of `target` is animated.
+    pub func animates(scene: const Scene*, target: u32, name: str) -> bool:
+        let (first, end) = self.target_range(target)
+        for at in first..<end:
+            if value_name(scene, &self.values.items[(usize)self.by_target.items[at]]) == name: return true
+        return false
+
+    ## Property `name` of `target` at `time` over every layer, starting from
+    ## its `rest` value (ufbxi_evaluate_props, ufbxi_combine_anim_layer).
+    pub func evaluate(scene: const Scene*, target: u32, name: str, time: f64, rest: Vector3) -> Vector3:
+        var result = rest
+        let (first, end) = self.target_range(target)
+        var order: i64 = -1
+        # The target's values are in layer order.
+        for at in first..<end:
+            let value = &self.values.items[(usize)self.by_target.items[at]]
+            if value_name(scene, value) != name: continue
+            let layer = self.layers.items[value.layer]
+            let v = self.value_at(value, time)
+            if value.layer == 0 or not (layer.additive or layer.blended):
+                result = v
+                continue
+            let weight = self.layer_weight(scene, value.layer, time)
+            let rotation = layer.compose_rotation and name == "Lcl Rotation"
+            let scale = layer.compose_scale and name == "Lcl Scaling"
+            if rotation and order < 0:
+                order = (i64)self.evaluate_number(scene, target, "RotationOrder", time, (f64)scene.integer(target, "RotationOrder", 0))
+                if order < 0 or order > 6: order = 0
+            if layer.additive:
+                if scale:
+                    result = Vector3(result.x * power(v.x, weight), result.y * power(v.y, weight), result.z * power(v.z, weight))
+                elif rotation:
+                    let added = slerp(Quat(), euler(v, order), weight)
+                    result = quat_euler(euler(result, order).times(added), order)
+                else:
+                    result = Vector3(result.x + v.x * weight, result.y + v.y * weight, result.z + v.z * weight)
+            else:
+                let keep = 1.0 - weight
+                if scale:
+                    result = Vector3(power(result.x, keep) * power(v.x, weight), power(result.y, keep) * power(v.y, weight), power(result.z, keep) * power(v.z, weight))
+                elif rotation:
+                    result = quat_euler(slerp(euler(result, order), euler(v, order), weight), order)
+                else:
+                    result = Vector3(result.x * keep + v.x * weight, result.y * keep + v.y * weight, result.z * keep + v.z * weight)
+        return result
+
+    ## Layer `index`'s weight at `time`: its Weight, animated in its own
+    ## layer when it is blended.
+    func layer_weight(scene: const Scene*, index: usize, time: f64) -> f64:
+        let layer = self.layers.items[index]
+        if not layer.blended: return layer.weight
+        let (first, end) = self.target_range(layer.object)
+        for at in first..<end:
+            let value = &self.values.items[(usize)self.by_target.items[at]]
+            if value.layer != index or value_name(scene, value) != "Weight": continue
+            var weight = self.value_at(value, time).x / 100.0
+            if weight < 0.0: weight = 0.0
+            if weight > 0.99999: weight = 1.0
+            return weight
+        return layer.weight
+
+    ## A number property at `time` (the first component).
+    pub func evaluate_number(scene: const Scene*, target: u32, name: str, time: f64, rest: f64) -> f64:
+        return self.evaluate(scene, target, name, time, Vector3(rest, 0.0, 0.0)).x
+
+    ## An animated value's components at `time`.
+    func value_at(value: const AnimValue*, time: f64) -> Vector3:
+        var out: f64[3] = value.defaults
+        for component: usize in 0..<3:
+            let curve = value.curves[component]
+            if curve != absent: out[component] = self.curve_at((usize)curve, time, out[component])
+        return Vector3(out[0], out[1], out[2])
+
+    ## Curve `index` at `time` (ufbx_evaluate_curve).
+    pub func curve_at(index: usize, time: f64, fallback: f64) -> f64:
+        return self.curve_value(index, time, fallback, true)
+
+    func curve_value(index: usize, time: f64, fallback: f64, extrapolate: bool) -> f64:
+        let curve = self.curves.items[index]
+        let keys = self.keys.items[curve.first..<curve.first + curve.count]
+        if keys.length == 0: return fallback
+        if keys.length == 1: return keys[0].value
+        if extrapolate and (time < keys[0].time or time > keys[keys.length - 1].time):
+            return self.extrapolated(index, time)
+        # The first key after `time`.
+        var low: usize = 0
+        var high = keys.length
+        while low < high:
+            let middle = (low + high) // 2
+            if keys[middle].time <= time: low = middle + 1
+            else: high = middle
+        if low == 0: return keys[0].value
+        if low == keys.length: return keys[keys.length - 1].value
+        let previous = keys[low - 1]
+        let next = keys[low]
+        if previous.time == time: return previous.value
+        let reciprocal = 1.0 / (next.time - previous.time)
+        var t = (time - previous.time) * reciprocal
+        match previous.interpolation:
+            .constant_previous: return previous.value
+            .constant_next: return next.value
+            .linear: return previous.value * (1.0 - t) + next.value * t
+            _:
+                let x1 = previous.right_dx * reciprocal
+                let x2 = 1.0 - next.left_dx * reciprocal
+                t = bezier_parameter(x1, x2, t)
+                let u = 1.0 - t
+                let y0 = previous.value
+                let y3 = next.value
+                let y1 = y0 + previous.right_dy
+                let y2 = y3 - next.left_dy
+                return u * u * u * y0 + 3.0 * (u * u * t * y1 + u * t * t * y2) + t * t * t * y3
+
+    ## Outside the keys (ufbxi_extrapolate_curve), in KTime ticks so repeats
+    ## land on frames exactly.
+    func extrapolated(index: usize, time: f64) -> f64:
+        let curve = self.curves.items[index]
+        let keys = self.keys.items[curve.first..<curve.first + curve.count]
+        let before = time < keys[0].time
+        let key = keys[0] if before else keys[keys.length - 1]
+        let mode = curve.pre if before else curve.post
+        let repeat = curve.pre_repeat if before else curve.post_repeat
+        if mode == Extrapolation.constant: return key.value
+        if mode == Extrapolation.slope:
+            let dx = key.right_dx if before else key.left_dx
+            let dy = key.right_dy if before else key.left_dy
+            if dx == 0.0: return key.value
+            return key.value + dy * ((time - key.time) / dx)
+        if repeat == 0: return key.value
+        let low = math.round(keys[0].time * self.ticks)
+        let high = math.round(keys[keys.length - 1].time * self.ticks)
+        let ticks = time * self.ticks
+        let delta = low - ticks if before else ticks - high
+        let duration = high - low
+        if not (duration >= 1.0): return key.value
+        var count = math.floor(delta / duration)
+        var rest = delta - count * duration
+        if repeat > 0 and count >= (f64)repeat:
+            count = (f64)(repeat - 1)
+            rest = duration
+        if mode == Extrapolation.mirror:
+            let parity = count * 0.5 - math.floor(count * 0.5)
+            if parity <= 0.25: rest = duration - rest
+        if before: rest = duration - rest
+        var value = self.curve_value(index, (low + rest) / self.ticks, key.value, false)
+        if mode == Extrapolation.repeat_relative:
+            var step = keys[keys.length - 1].value - keys[0].value
+            if before: step = -step
+            value += step * (count + 1.0)
+        return value
+
+func by_target_order(animation: const Animation*, a: u32, b: u32) -> i64:
+    let x = animation.values.items[(usize)a].target
+    let y = animation.values.items[(usize)b].target
+    if x != y: return -1 if x < y else 1
+    return (i64)a - (i64)b
+
+## |v|^e with v's sign (ufbxi_pow_abs).
+func power(v: f64, e: f64) -> f64:
+    if e <= 0.0: return 1.0
+    if e >= 1.0: return v
+    let sign = -1.0 if v < 0.0 else 1.0
+    return sign * math.pow(v * sign, e)
+
+func value_name(scene: const Scene*, value: const AnimValue*) -> str:
+    return scene.document.text(value.name_node, value.name_index) else ""
+
+## The parameter of a cubic Bezier's time polynomial at `x` (Newton's
+## method, as ufbxi_find_cubic_bezier_t).
+func bezier_parameter(p1: f64, p2: f64, x: f64) -> f64:
+    let a = p1 * 3.0 - p2 * 3.0 + 1.0
+    let b = p2 * 3.0 - p1 * 6.0
+    let c = p1 * 3.0
+    var t = x
+    for round in 0..<11:
+        let miss = ((a * t + b) * t + c) * t - x
+        t -= miss / ((3.0 * a * t + 2.0 * b) * t + c)
+        if round >= 2 and math.abs(miss) <= 8.881784197001252e-16: break
+    return t
+
+extend Scene:
+    ## The first AnimationStack's animation (empty when there is none).
+    pub func animation() -> Animation!:
+        var result = Animation(absent, Growing[AnimLayer](), Growing[AnimValue](), Growing[AnimCurve](), Growing[Key](), 0.0, 0.0, self.settings.ticks, Growing[u32]())
+        errdefer result.close()
+        var stack = absent
+        for index in 1..<(u32)self.objects.count:
+            if self.objects.items[(usize)index].kind == Kind.stack:
+                stack = index
+                break
+        if stack == absent: return result
+        result.stack = stack
+        result.start = self.number(stack, "LocalStart", 0.0) / result.ticks
+        result.stop = self.number(stack, "LocalStop", 0.0) / result.ticks
+        # Its layers, in connection order.
+        for index in 0..<self.child_count(stack):
+            let connection = self.child_connection(stack, index)
+            if connection.property != absent or self.kind(connection.child) != Kind.layer: continue
+            let layer = connection.child
+            let mode = self.integer(layer, "BlendMode", 0)
+            try result.layers.push(AnimLayer(object = layer, weight = math.max(0.0, self.number(layer, "Weight", 100.0) / 100.0), additive = mode == 0, blended = mode == 0 or mode == 2,
+                                             compose_rotation = self.integer(layer, "RotationAccumulationMode", 0) == 0, compose_scale = self.integer(layer, "ScaleAccumulationMode", 0) == 0))
+        var curve_objects = Growing[u32]()
+        defer curve_objects.close()
+        for (layer_index, layer) in result.layers.view().indexed():
+            for index in 0..<self.child_count(layer.object):
+                let connection = self.child_connection(layer.object, index)
+                if connection.property != absent or self.kind(connection.child) != Kind.curve_node: continue
+                try self.read_curve_node(&result, layer_index, connection.child, &curve_objects)
+        try self.read_curves(&result, curve_objects.view())
+        for index in 0..<(u32)result.values.count: try result.by_target.push(index)
+        sort_indices(result.by_target.items[..<result.by_target.count], &result, by_target_order)
+        return result
+
+    ## A curve node's animated properties: one value per OP connection to a
+    ## target object, its curves found by component.
+    func read_curve_node(result: Animation*, layer: usize, node: u32, curve_objects: Growing[u32]*) -> !:
+        var curves: u32[3] = [absent, absent, absent]
+        let names: str[3] = ["d|X", "d|Y", "d|Z"]
+        var defaults: f64[3] = [0.0, 0.0, 0.0]
+        var single = false
+        for index in 0..<self.child_count(node):
+            let connection = self.child_connection(node, index)
+            if self.kind(connection.child) != Kind.curve: continue
+            let property = self.connection_property(connection)
+            var component: usize = 3
+            for (at, name) in names.indexed():
+                if property == name: component = at
+            if component == 3:
+                # A single-valued property (d|DeformPercent, d|Visibility...).
+                if not single and curves[0] == absent:
+                    component = 0
+                    single = true
+                else: continue
+            curves[component] = (u32)curve_objects.count
+            try curve_objects.push(connection.child)
+        for (at, name) in names.indexed(): defaults[at] = self.number(node, name, 0.0)
+        if single:
+            # The single value's default: the node's first d| property.
+            if let list = self.document.child(self.objects.items[(usize)node].node, "Properties70"):
+                if let first = self.document.first_child(list):
+                    defaults[0] = self.document.real(first, 4) else 0.0
+        for index in 0..<self.parent_count(node):
+            let connection = self.parent_connection(node, index)
+            if connection.property == absent: continue
+            try result.values.push(AnimValue(layer = layer, target = connection.parent, name_node = connection.node, name_index = 3, curves = curves, defaults = defaults))
+
+
+    ## Decode every curve's keys in one batch, then their tangents.
+    func read_curves(result: Animation*, objects: const u32[]) -> !:
+        var raw = Growing[RawCurve]()
+        defer:
+            for index in 0..<raw.count: raw.items[index].release()
+            raw.close()
+        var jobs = Growing[ArrayJob]()
+        defer jobs.close()
+        for object in objects:
+            let node = self.objects.items[(usize)object].node
+            var curve = RawCurve()
+            # Until it is in `raw`, the curve's arrays are its own to free.
+            var kept = false
+            defer:
+                if not kept: curve.release()
+            let source = self.document
+            # ASCII files from 7.2 on write the attribute floats as their
+            # bits' integers (some of them are not floats: packed weights).
+            curve.integer_bits = not source.binary and source.version >= 7200
+            # FBX 6 curves have none of these arrays and stay empty.
+            if let times = source.child(node, "KeyTime"):
+                if let values = source.child(node, "KeyValueFloat"):
+                    try curve.plan(source, times, values, node, &jobs)
+            try raw.push(curve)
+            kept = true
+        try self.document.decode_arrays(jobs.view())
+        for (index, object) in objects.indexed():
+            let node = self.objects.items[(usize)object].node
+            let (pre, pre_repeat) = extrapolation(self.document, node, "Pre-Extrapolation")
+            let (post, post_repeat) = extrapolation(self.document, node, "Post-Extrapolation")
+            let first = result.keys.count
+            try raw.items[index].keys(&result.keys, result.ticks)
+            try result.curves.push(AnimCurve(first = first, count = result.keys.count - first, pre = pre, pre_repeat = pre_repeat, post = post, post_repeat = post_repeat))

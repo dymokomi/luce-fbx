@@ -10,7 +10,7 @@ import memory
 import math
 import luce_fbx.errors as errors
 import luce_fbx.document as document
-from luce_fbx.document import Document, Property
+from luce_fbx.document import Document, Property, ArrayJob, Element, scalar_integer
 from geocore_growing import Growing
 from geocore import Vector3, Matrix4
 
@@ -52,8 +52,10 @@ pub struct Connection:
     pub var child: u32
     pub var parent: u32
     ## The parent's property an OP connection names (a document property
-    ## index), or absent.
+    ## index: its node's fourth), or absent.
     pub var property: u32
+    ## The C (or Connect) node.
+    pub var node: u32
 
 ## A class's property template: an ObjectType of Definitions and its
 ## Properties70.
@@ -70,6 +72,8 @@ pub struct Scene:
     ## Sanitized object names, back to back.
     pub var names: Growing[u8]
     pub var settings: Settings
+    ## Written by Blender's binary exporter (its blend shape weights differ).
+    pub var blender_binary: bool
     ## Object indices sorted by id (FBX 7) or by key text (FBX 6).
     var lookup: Growing[u32]
     ## Connection indices sorted by child, and by parent.
@@ -79,7 +83,8 @@ pub struct Scene:
 
     ## The scene of a parsed document, which must outlive it.
     pub static func of(source: const Document*) -> Scene!:
-        var scene = Scene(source, source.version < 7000, Growing[Object](), Growing[Connection](), Growing[u8](), Settings(), Growing[u32](), Growing[u32](), Growing[u32](), Growing[Template]())
+        var scene = Scene(source, source.version < 7000, Growing[Object](), Growing[Connection](), Growing[u8](), Settings(), false, Growing[u32](), Growing[u32](), Growing[u32](), Growing[Template]())
+        scene.blender_binary = source.binary and creator_starts(source, "Blender (")
         errdefer scene.close()
         try scene.read_objects()
         try scene.read_connections()
@@ -321,7 +326,7 @@ pub struct Scene:
         if op:
             if let named = source.property(node, 3):
                 if named.kind == 'S': property = self.document.nodes.items[(usize)node].first_property + 3
-        try self.connections.push(Connection(child = child, parent = parent, property = property))
+        try self.connections.push(Connection(child = child, parent = parent, property = property, node = node))
 
     ## The object a connection's property `index` names.
     func connection_end(node: u32, index: usize) -> u32?:
@@ -351,6 +356,15 @@ pub struct Scene:
             let found = self.document.text(template.class_node, 0) else continue
             if found == class: return template.properties
         return none
+
+## Whether the file's Creator starts with `prefix`.
+func creator_starts(source: const Document*, prefix: str) -> bool:
+    var creator = source.child(0, "Creator")
+    if creator == none:
+        if let header = source.child(0, "FBXHeaderExtension"): creator = source.child(header, "Creator")
+    let node = creator else return false
+    let text = source.text(node, 0) else return false
+    return text.length >= prefix.length and (str)text.bytes[..<prefix.length] == prefix
 
 ## An object's name from its name property: FBX 7 binary "Name\x00\x01Class",
 ## otherwise "Class::Name".

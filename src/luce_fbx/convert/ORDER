@@ -1,4 +1,5 @@
 options.lucb
+deformers.lucb
 geometry.lucb
 topology.lucb
 big_faces.lucb
@@ -8,4 +9,5 @@ attributes.lucb
 fill.lucb
 edges.lucb
 curves.lucb
+deform.lucb
 load.lucb

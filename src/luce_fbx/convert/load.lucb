@@ -50,13 +50,23 @@ struct Gathered:
 pub func import_document(document: const Document*, options: const ImportOptions*, warnings: Warnings*) -> GeometrySet*!:
     var scene = try Scene.of(document)
     defer scene.close()
-    var hierarchy = try scene.hierarchy()
+    # With a time, the first animation stack evaluated at it.
+    var animation = try scene.animation()
+    defer animation.close()
+    var time = options.time
+    if math.is_nan(time) and not math.is_nan(options.frame): time = options.frame / scene.settings.frame_rate
+    let timed = not math.is_nan(time)
+    var animated: const Animation*? = none
+    if timed:
+        animated = &animation
+        if scene.legacy and document.child(0, "Takes") != none: try warnings.add("FBX 6 takes (animation) are not read; the file's rest values are shown")
+    var hierarchy = try scene.hierarchy(animated, time)
     defer hierarchy.close()
     var gathered = Gathered()
     defer gathered.close()
-    try gather(&scene, &hierarchy, options, &gathered, warnings)
     var jobs = Growing[ArrayJob]()
     defer jobs.close()
+    try gather(&scene, &hierarchy, options, &gathered, &jobs, warnings)
     try gather_curves(&scene, &hierarchy, options, &gathered.paths, &gathered.curves, &jobs, warnings)
     try decode(document, &gathered, &jobs)
     try find_faces(gathered.geometries.items[..<gathered.geometries.count])
@@ -67,18 +77,32 @@ pub func import_document(document: const Document*, options: const ImportOptions
             continue
         normalize_layers(geometry)
         try triangulate_big_faces(geometry)
+        if geometry.deformation.any():
+            try deform(&scene, &hierarchy, animated, time, geometry, first_model(&gathered, index))
+
+    # A skinned mesh's points are in world space already.
+    let convert = conversion(&scene.settings) if options.convert_units else Matrix4()
+    for index in 0..<gathered.uses.count:
+        let use = &gathered.uses.items[index]
+        if gathered.geometries.items[use.geometry].world_space: use.matrix = convert
     try decide_instances(&gathered, options)
     let set = try empty_set()
     errdefer dispose_set(set)
     if let mesh = try merged_mesh(&gathered, options, warnings): try set_put(set, mesh_component(), (void*)mesh)
     if let instances = try instance_rows(&gathered, options, warnings): try set_put(set, instances_component(), (void*)instances)
     if let curves = try curves_of(gathered.curves.view(), &gathered.paths, warnings): try set_put(set, curves_type(), (void*)curves)
-    try put_details(set, &scene, options)
+    try put_details(set, &scene, options, time)
     return set
+
+## The model of the first use of geometry `index`.
+func first_model(gathered: const Gathered*, index: usize) -> u32:
+    for use in gathered.uses.view():
+        if use.geometry == index: return use.model
+    return 0
 
 ## Every model's mesh uses, their geometries read (not decoded), paths and
 ## materials.
-func gather(scene: const Scene*, hierarchy: const Hierarchy*, options: const ImportOptions*, gathered: Gathered*, warnings: Warnings*) -> !:
+func gather(scene: const Scene*, hierarchy: const Hierarchy*, options: const ImportOptions*, gathered: Gathered*, jobs: Growing[ArrayJob]*, warnings: Warnings*) -> !:
     let convert = conversion(&scene.settings) if options.convert_units else Matrix4()
     var seen = Growing[u32]()
     defer seen.close()
@@ -95,21 +119,25 @@ func gather(scene: const Scene*, hierarchy: const Hierarchy*, options: const Imp
         let materials_count = gathered.materials.count - materials_first
         # FBX 6 keeps the mesh in the Model; FBX 7 connects Geometry objects.
         if scene.legacy and scene.document.child(entry_node(scene, object), "Vertices") != none:
-            try add_use(scene, gathered, &seen, object, model, &convert, entry, path, materials_first, materials_count, warnings)
+            try add_use(scene, hierarchy, options, gathered, &seen, object, model, &convert, entry, path, materials_first, materials_count, jobs, warnings)
         for index in 0..<scene.child_count(object):
             let connection = scene.child_connection(object, index)
             if connection.property != absent: continue
             let child = connection.child
             if scene.kind(child) != Kind.geometry or scene.subclass(child) != "Mesh": continue
-            try add_use(scene, gathered, &seen, child, model, &convert, entry, path, materials_first, materials_count, warnings)
+            try add_use(scene, hierarchy, options, gathered, &seen, child, model, &convert, entry, path, materials_first, materials_count, jobs, warnings)
 
 func entry_node(scene: const Scene*, object: u32) -> u32:
     return scene.objects.items[(usize)object].node
 
-func add_use(scene: const Scene*, gathered: Gathered*, seen: Growing[u32]*, object: u32, model: u32, convert: const Matrix4*, entry: const Model*, path: i32, materials_first: usize, materials_count: usize, warnings: Warnings*) -> !:
+func add_use(scene: const Scene*, hierarchy: const Hierarchy*, options: const ImportOptions*, gathered: Gathered*, seen: Growing[u32]*, object: u32, model: u32, convert: const Matrix4*, entry: const Model*, path: i32, materials_first: usize, materials_count: usize, jobs: Growing[ArrayJob]*, warnings: Warnings*) -> !:
     var slot = seen.items[(usize)object]
     if slot == absent:
-        let geometry = try read_geometry(scene.document, object, entry_node(scene, object), warnings) else return
+        var geometry = try read_geometry(scene.document, object, entry_node(scene, object), warnings) else return
+        if options.deform:
+            read_deformers(scene, hierarchy, object, &geometry.deformation, jobs) catch failure:
+                geometry.close()
+                error(failure.code, failure.message)
         gathered.geometries.push(geometry) catch failure:
             var owned = geometry
             owned.close()
@@ -136,6 +164,8 @@ func decide_instances(gathered: Gathered*, options: const ImportOptions*) -> !:
     for index in 0..<gathered.uses.count:
         let use = &gathered.uses.items[index]
         if gathered.geometries.items[use.geometry].broken: continue
+        # A skinned mesh is in world space: nothing to place.
+        if gathered.geometries.items[use.geometry].world_space: continue
         let shared = options.instancing and counts.items[use.geometry] > 1
         if not options.keep_hierarchy and not shared: continue
         if placement_of(&use.matrix) == none: continue
@@ -259,12 +289,13 @@ func put_text(mesh: Mesh*, name: str, faces: usize, table: const TableBuilder*, 
 
 ## The set's detail attributes: the file's axes, units and frame rate (Y
 ## and meters after a conversion).
-func put_details(set: GeometrySet*, scene: const Scene*, options: const ImportOptions*) -> !:
+func put_details(set: GeometrySet*, scene: const Scene*, options: const ImportOptions*, time: f64) -> !:
     let settings = scene.settings
     try put_detail_text(set, "fbx.upAxis", "+Y" if options.convert_units else settings.up.text())
     try put_detail_text(set, "fbx.frontAxis", "+Z" if options.convert_units else settings.front.text())
     try put_detail_number(set, "fbx.metersPerUnit", 1.0 if options.convert_units else settings.meters)
     try put_detail_number(set, "fbx.frameRate", settings.frame_rate)
+    if not math.is_nan(time): try put_detail_number(set, "fbx.time", time)
 
 func put_detail_text(set: GeometrySet*, name: str, text: str) -> !:
     var table = TableBuilder()

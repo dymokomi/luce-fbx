@@ -84,8 +84,9 @@ pub struct Hierarchy:
 
 extend Scene:
     ## The hierarchy of the scene's models, with their transforms at rest
-    ## (their properties' values).
-    pub func hierarchy() -> Hierarchy!:
+    ## (their properties' values), or with `animation` evaluated at `time`
+    ## (seconds).
+    pub func hierarchy(animation: const Animation*? = none, time: f64 = 0.0) -> Hierarchy!:
         var result = Hierarchy(Growing[Model](), Growing[u32](), Growing[u32](), Growing[u8]())
         errdefer result.close()
         try result.model_of.fill(self.objects.count, absent)
@@ -111,9 +112,24 @@ extend Scene:
         try self.order_models(&result)
         try self.name_paths(&result)
         for model in result.order.view():
-            let inputs = self.transform_inputs(result.models.items[(usize)model].object)
+            var inputs = self.transform_inputs(result.models.items[(usize)model].object)
+            if let animated = animation: self.animate_inputs(animated, result.models.items[(usize)model].object, time, &inputs)
             place(&result, model, &inputs)
         return result
+
+    ## Override `inputs` with the animated transform properties of `object`.
+    func animate_inputs(animation: const Animation*, object: u32, time: f64, inputs: TransformInputs*):
+        if not animation.touches(object): return
+        inputs.translation = animation.evaluate(&self, object, "Lcl Translation", time, inputs.translation)
+        inputs.rotation = animation.evaluate(&self, object, "Lcl Rotation", time, inputs.rotation)
+        inputs.scaling = animation.evaluate(&self, object, "Lcl Scaling", time, inputs.scaling)
+        inputs.pre_rotation = animation.evaluate(&self, object, "PreRotation", time, inputs.pre_rotation)
+        inputs.post_rotation = animation.evaluate(&self, object, "PostRotation", time, inputs.post_rotation)
+        inputs.rotation_offset = animation.evaluate(&self, object, "RotationOffset", time, inputs.rotation_offset)
+        inputs.rotation_pivot = animation.evaluate(&self, object, "RotationPivot", time, inputs.rotation_pivot)
+        inputs.scaling_offset = animation.evaluate(&self, object, "ScalingOffset", time, inputs.scaling_offset)
+        inputs.scaling_pivot = animation.evaluate(&self, object, "ScalingPivot", time, inputs.scaling_pivot)
+        inputs.visibility = animation.evaluate_number(&self, object, "Visibility", time, inputs.visibility)
 
     ## Parents before children; fails on a cycle.
     func order_models(result: Hierarchy*) -> !:

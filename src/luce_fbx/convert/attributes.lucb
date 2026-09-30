@@ -77,6 +77,10 @@ func plan_attributes(build: const MeshBuild*, geometries: const MeshGeometry[], 
                     if entry.domain != domain: entry.domain = merged_domain(entry.domain, domain)
             if not found: try planned.push(Planned(kind = layer.kind, ordinal = ordinal, domain = domain))
 
+## Whether a layer holds directions (normals, tangents, binormals).
+func directional(kind: LayerKind) -> bool:
+    return kind == LayerKind.normal or kind == LayerKind.tangent or kind == LayerKind.binormal
+
 ## Where a layer's values land, or none for a mapping that cannot carry it.
 func domain_of(layer: const Layer*) -> Domain?:
     match layer.kind:

@@ -1,0 +1,72 @@
+## Animation and deformers at a time, against ufbx's values for the same
+## files (ufbxdump --time T --precise): curve extrapolation before and after
+## the keys, layers, auto-clamped tangents, blend shape in-betweens and dual
+## quaternion skinning. Each case checks its first mesh model's world matrix
+## and the sum of its placed points.
+import memory
+import math
+from fbx_kernel import Document, Scene, Animation, ImportOptions, Warnings, import_document, read_file, invalid
+from geocore import Mesh, Vector3
+from geocore_kernel import GeometrySet, set_mesh, dispose_set, point_span, mesh_origin
+
+struct Case:
+    let path: str
+    let time: f64
+    let model: str
+    let world: f64[12]
+    let sum: f64[3]
+    let magnitude: f64
+
+let cases: Case[8] = [
+    Case("tests/fixtures/maya_anim_extrapolation_7700_binary.fbx", -2.0, "/pCube1", [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, -20.466015209301091, 0.0, 0.0], [-163.72812167440873, 0.0, 0.0], 171.72812167440873),
+    Case("tests/fixtures/maya_anim_extrapolation_7700_binary.fbx", 3.7, "/pCube1", [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 9.1214062227167432, 0.0, 0.0], [72.971249781733945, 0.0, 0.0], 80.971249781733945),
+    Case("tests/fixtures/maya_anim_layers_7500_binary.fbx", 0.7, "/pCube1", [0.71043814211032019, 0.6307697402344562, -6.6134002356642423, -0.33829201986213703, 6.5849504619236159, 0.59171557728196, 10.18688962040218, 0.42139077954477949, 1.1345080020850271, 9.2445771530953227, 9.0916773287192054, 9.1681272409072641], [73.956617224762581, 72.733418629753643, 73.345017927258127], 220.03505378177442),
+    Case("tests/fixtures/maya_auto_clamp_7700_ascii.fbx", 0.8, "/pCube1", [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 9.1593461394936089, 0.0, 0.0], [73.274769115948871, 0.0, 0.0], 81.274769115948871),
+    Case("tests/fixtures/maya_blend_inbetween_7500_binary.fbx", 0.5, "/pCube1", [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], [0.0, 0.91540293453738686, -8.1023976150907018], 33.017800549628092),
+    Case("tests/fixtures/maya_blend_inbetween_7500_binary.fbx", 1.5, "/pCube1", [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], [0.0, 0.36909545393468157, -5.7751643791474887], 30.144259833082174),
+    Case("tests/fixtures/maya_dq_weights_7500_binary.fbx", 0.5, "/pCube1", [11.58970411876864, 0.0, 0.0, 0.0, 6.4644905026055142, 0.0, 0.0, 0.0, 8.0592954168098725, 0.0, 0.0, 0.0], [3646.4382243313548, 6985.4323522482955, 502.74959513016938], 13162.257209744048),
+    Case("tests/fixtures/maya_dq_weights_7500_binary.fbx", 1.2, "/pCube1", [11.58970411876864, 0.0, 0.0, 0.0, 6.4644905026055142, 0.0, 0.0, 0.0, 8.0592954168098725, 0.0, 0.0, 0.0], [-453.77629088218248, 6426.7921962845812, 2886.8141450683897], 11412.682413590604),
+]
+
+pub func animated() -> !:
+    for entry in cases:
+        let data = try read_file(entry.path)
+        defer free(data) in memory.heap
+        var document = try Document.parse(data)
+        defer document.close()
+        var scene = try Scene.of(&document)
+        defer scene.close()
+        var animation = try scene.animation()
+        defer animation.close()
+        var hierarchy = try scene.hierarchy(&animation, entry.time)
+        defer hierarchy.close()
+        var found = false
+        for model in 1..<(u32)hierarchy.models.count:
+            if hierarchy.path(model) != entry.model: continue
+            found = true
+            let m = hierarchy.models.items[(usize)model].world
+            let columns: Vector3[4] = [m.x, m.y, m.z, m.translation]
+            for c in 0..<(usize)4:
+                close(columns[c].x, entry.world[c * 3], 1.0e-9)
+                close(columns[c].y, entry.world[c * 3 + 1], 1.0e-9)
+                close(columns[c].z, entry.world[c * 3 + 2], 1.0e-9)
+        assert(found)
+        var warnings = Warnings()
+        defer warnings.close()
+        let options = ImportOptions(instancing = false, time = entry.time)
+        let set = try import_document(&document, &options, &warnings)
+        defer dispose_set(set)
+        let mesh = set_mesh(set) else error(invalid, "no mesh")
+        let origin = mesh_origin(mesh)
+        var sum: f64[3] = [0.0, 0.0, 0.0]
+        for p in point_span(mesh):
+            sum[0] += (f64)p.x + origin.x
+            sum[1] += (f64)p.y + origin.y
+            sum[2] += (f64)p.z + origin.z
+        # Points are f32: the sums carry their rounding.
+        for k in 0..<(usize)3: close(sum[k], entry.sum[k], 1.0e-6 * entry.magnitude + 1.0e-9)
+
+func close(value: f64, wanted: f64, slack: f64):
+    let tolerance = slack + 1.0e-9 * math.abs(wanted)
+    if math.abs(value - wanted) > tolerance: print(f"animation: {value} is not {wanted}")
+    assert(math.abs(value - wanted) <= tolerance)

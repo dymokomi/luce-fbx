@@ -104,6 +104,10 @@ pub struct MeshGeometry:
     ## Faces of more than 256 corners and their triangles (big_faces.lucb).
     pub var big_faces: Growing[BigFace]
     pub var big_triangles: Growing[u32]
+    ## Its blend shapes and skin (deformers.lucb), and whether deform.lucb
+    ## left its points in world space (skinned).
+    pub var deformation: Deformation
+    pub var world_space: bool
 
     pub mutating func close():
         if self.vertices.length > 0: free(self.vertices) in memory.heap
@@ -114,6 +118,7 @@ pub struct MeshGeometry:
         self.faces.close()
         self.big_faces.close()
         self.big_triangles.close()
+        self.deformation.close()
 
     pub func point_count() -> usize:
         return self.vertices.length // 3
@@ -188,7 +193,7 @@ func read_geometry(document: const Document*, object: u32, node: u32, warnings: 
     let indices = array_node(document, node, "PolygonVertexIndex") else return none
     discard(vertices)
     discard(indices)
-    var geometry = MeshGeometry(object = object, node = node, vertices = empty_reals(), indices = empty_ints(), edges = empty_ints(), layers = Growing[Layer](), faces = Growing[i32](), broken = false, big_faces = Growing[BigFace](), big_triangles = Growing[u32]())
+    var geometry = MeshGeometry(object = object, node = node, vertices = empty_reals(), indices = empty_ints(), edges = empty_ints(), layers = Growing[Layer](), faces = Growing[i32](), broken = false, big_faces = Growing[BigFace](), big_triangles = Growing[u32](), deformation = Deformation(), world_space = false)
     errdefer geometry.close()
     var cursor = document.first_child(node)
     while let child = cursor:

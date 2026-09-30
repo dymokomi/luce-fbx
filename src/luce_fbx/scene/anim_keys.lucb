@@ -1,0 +1,225 @@
+## Animation curve keys as ufbx decodes them (ufbxi_read_animation_curve):
+## KeyTime, KeyValueFloat, and run-length encoded KeyAttrFlags and
+## KeyAttrDataFloat (four per run: right slope, next left slope, packed
+## weights, packed velocities) counted by KeyAttrRefCount. Tangents become
+## the Bezier handles anim.lucb evaluates: automatic (with bias, clamping
+## and time independence), TCB, user and weighted ones; linear keys get the
+## handles of a straight line, constant keys flat ones.
+
+## Key flags (FbxAnimCurveDef).
+let flag_constant: u32 = 0x2
+let flag_cubic: u32 = 0x8
+let flag_constant_next: u32 = 0x100
+let flag_tcb: u32 = 0x200
+let flag_user: u32 = 0x400
+let flag_clamp: u32 = 0x1000
+let flag_time_independent: u32 = 0x2000
+let flag_clamp_progressive: u32 = 0x4000
+let flag_weighted_right: u32 = 0x1000000
+let flag_weighted_next_left: u32 = 0x2000000
+
+## An extrapolation child (`Type: C|R|M|K|A`, `Repetition: n`).
+func extrapolation(source: const Document*, node: u32, name: str) -> (Extrapolation, i64):
+    let child = source.child(node, name) else return (Extrapolation.constant, -1)
+    var mode = Extrapolation.constant
+    if let kind = source.child(child, "Type"):
+        var letter: i64 = 0
+        if let found = source.property(kind, 0):
+            if found.kind == 'S' and found.size > 0: letter = (i64)source.data[found.offset]
+            else: letter = scalar_integer(found) else 0
+        # The type is a letter: its character code in binary files.
+        if letter == (i64)(u8)'R': mode = Extrapolation.repeat
+        elif letter == (i64)(u8)'M': mode = Extrapolation.mirror
+        elif letter == (i64)(u8)'K': mode = Extrapolation.slope
+        elif letter == (i64)(u8)'A': mode = Extrapolation.repeat_relative
+    var repeat: i64 = -1
+    if let count = source.child(child, "Repetition"):
+        repeat = source.integer(count, 0) else -1
+        if repeat < 0: repeat = -1
+    return (mode, repeat)
+
+## One curve's decoded arrays until its keys are made.
+struct RawCurve:
+    var integer_bits: bool = false
+    var times: i64[]
+    var values: f64[]
+    var flags: i32[]
+    ## KeyAttrDataFloat as bits: four per flag (right slope, next left
+    ## slope, packed weights, packed velocities).
+    var data: u32[]
+    var counts: i32[]
+
+    mutating func release():
+        if self.times.length > 0: free(self.times) in memory.heap
+        if self.values.length > 0: free(self.values) in memory.heap
+        if self.flags.length > 0: free(self.flags) in memory.heap
+        if self.data.length > 0: free(self.data) in memory.heap
+        if self.counts.length > 0: free(self.counts) in memory.heap
+
+    mutating func plan(source: const Document*, times: u32, values: u32, node: u32, jobs: Growing[ArrayJob]*) -> !:
+        self.times = try alloc i64[source.array_count(times)] in memory.heap
+        try jobs.push(ArrayJob(times, Element.int64, u8[]((u8*)self.times.data, self.times.length * 8)))
+        self.values = try alloc f64[source.array_count(values)] in memory.heap
+        try jobs.push(ArrayJob(values, Element.real64, u8[]((u8*)self.values.data, self.values.length * 8)))
+        if let flags = source.child(node, "KeyAttrFlags"):
+            self.flags = try alloc i32[source.array_count(flags)] in memory.heap
+            try jobs.push(ArrayJob(flags, Element.int32, u8[]((u8*)self.flags.data, self.flags.length * 4)))
+        if let data = source.child(node, "KeyAttrDataFloat"):
+            let count = source.array_count(data)
+            self.data = try alloc u32[count] in memory.heap
+            # Integers keep their bits as i32; floats as f32: either way the
+            # four bytes are the attribute's bits.
+            try jobs.push(ArrayJob(data, Element.int32 if self.integer_bits else Element.real32, u8[]((u8*)self.data.data, count * 4)))
+        if let counts = source.child(node, "KeyAttrRefCount"):
+            self.counts = try alloc i32[source.array_count(counts)] in memory.heap
+            try jobs.push(ArrayJob(counts, Element.int32, u8[]((u8*)self.counts.data, self.counts.length * 4)))
+
+    ## Attribute `k` (0..3) of run `run` as a float, or as its bits.
+    func slope(run: usize, k: usize) -> f64:
+        return (f64)f32.bits(self.data[run * 4 + k])
+
+    func bits(run: usize, k: usize) -> u32:
+        return self.data[run * 4 + k]
+
+    ## The keys with their tangents (ufbxi_read_animation_curve); curves
+    ## whose arrays disagree have no keys.
+    func keys(out: Growing[Key]*, ktime: f64) -> !:
+        let count = self.times.length
+        if count == 0 or self.values.length != count: return
+        let runs = self.flags.length
+        if self.counts.length != runs or self.data.length != runs * 4 or runs == 0: return
+        var slope_left: f64 = 0.0
+        var weight_left: f64 = 0.333333
+        var previous_time: f64 = 0.0
+        var run: usize = 0
+        var left_in_run = (i64)self.counts[0]
+        for index in 0..<count:
+            if left_in_run <= 0: return
+            let time = (f64)self.times[index] / ktime
+            let value = self.values[index]
+            let next_time = (f64)self.times[index + 1] / ktime if index + 1 < count else time
+            let flags = (u32)self.flags[run]
+            var slope_right = (f64)(f32)self.slope(run, 0)
+            var weight_right: f64 = 0.333333
+            var next_slope_left = (f64)(f32)self.slope(run, 1)
+            var next_weight_left: f64 = 0.333333
+            if flags & (flag_weighted_right | flag_weighted_next_left) != 0:
+                let packed = self.bits(run, 2)
+                if flags & flag_weighted_right != 0: weight_right = (f64)(f32)((f32)(packed & 0xFFFF) * 0.0001)
+                if flags & flag_weighted_next_left != 0: next_weight_left = (f64)(f32)((f32)(packed >> 16) * 0.0001)
+            var interpolation = Interpolation.linear
+            if flags & flag_constant != 0:
+                interpolation = Interpolation.constant_next if flags & flag_constant_next != 0 else Interpolation.constant_previous
+                weight_right = 0.333333
+                next_weight_left = 0.333333
+                slope_right = 0.0
+                next_slope_left = 0.0
+            elif flags & flag_cubic != 0:
+                interpolation = Interpolation.cubic
+                let has_previous = index > 0 and time > previous_time
+                let has_next = index + 1 < count and next_time > time
+                let previous_value = self.values[index - 1] if index > 0 else value
+                let next_value = self.values[index + 1] if index + 1 < count else value
+                if flags & flag_tcb != 0:
+                    let edge = not has_previous or not has_next
+                    let left = (value - previous_value) / (time - previous_time) if has_previous else 0.0
+                    let right = (next_value - value) / (next_time - time) if has_next else 0.0
+                    let (a, b) = tcb(self.slope(run, 0), self.slope(run, 1), self.slope(run, 2), left, right, edge)
+                    slope_left = a
+                    slope_right = b
+                    next_slope_left = 0.0
+                    next_weight_left = 0.333333
+                elif flags & flag_user == 0:
+                    # Automatic tangents.
+                    if has_previous and has_next:
+                        if math.abs(slope_left + slope_right) <= 0.0001:
+                            slope_left = auto_slope(previous_time, time, next_time, previous_value, value, next_value, weight_left, weight_right, slope_right, flags)
+                            slope_right = slope_left
+                        else:
+                            slope_left = auto_slope(previous_time, time, next_time, previous_value, value, next_value, weight_left, weight_right, -slope_left, flags)
+                            slope_right = auto_slope(previous_time, time, next_time, previous_value, value, next_value, weight_left, weight_right, slope_right, flags)
+                    elif has_previous:
+                        slope_left = one_sided_slope(time - previous_time, value - previous_value, -slope_left, flags)
+                        slope_right = slope_left
+                    elif has_next:
+                        slope_left = one_sided_slope(next_time - time, next_value - value, slope_right, flags)
+                        slope_right = slope_left
+                    else:
+                        slope_left = 0.0
+                        slope_right = 0.0
+            else:
+                weight_right = 0.333333
+                next_weight_left = 0.333333
+                if next_time > time:
+                    slope_right = (self.values[index + 1] - value) / (next_time - time)
+                else:
+                    slope_right = 0.0
+                next_slope_left = slope_right
+            var key = Key(time = time, value = value, interpolation = interpolation, left_dx = 0.0, left_dy = 0.0, right_dx = 0.0, right_dy = 0.0)
+            if time > previous_time:
+                key.left_dx = (f64)(f32)(weight_left * (time - previous_time))
+                key.left_dy = (f64)(f32)(key.left_dx * (f64)(f32)slope_left)
+            if next_time > time:
+                key.right_dx = (f64)(f32)(weight_right * (next_time - time))
+                key.right_dy = (f64)(f32)(key.right_dx * (f64)(f32)slope_right)
+            try out.push(key)
+            slope_left = next_slope_left
+            weight_left = next_weight_left
+            previous_time = time
+            left_in_run -= 1
+            if left_in_run == 0:
+                run += 1
+                if run < runs: left_in_run = (i64)self.counts[run]
+
+## An automatic tangent's slope (ufbxi_solve_auto_tangent; clamp threshold 0).
+func auto_slope(previous_time: f64, time: f64, next_time: f64, previous_value: f64, value: f64, next_value: f64, weight_left: f64, weight_right: f64, bias: f64, flags: u32) -> f64:
+    if flags & flag_clamp != 0 and math.min(math.abs(previous_value - value), math.abs(next_value - value)) <= 0.0: return 0.0
+    var slope = (next_value - previous_value) / (next_time - previous_time)
+    if flags & flag_time_independent == 0:
+        let left = (value - previous_value) / (time - previous_time)
+        let right = (next_value - value) / (next_time - time)
+        let delta = (time - previous_time) / (next_time - previous_time)
+        slope = slope * 0.5 + (left * (1.0 - delta) + right * delta) * 0.5
+        let bias_weight = math.abs(bias) / 100.0
+        if bias_weight > 0.0001:
+            let target = right if bias > 0.0 else left
+            let difference = target - slope
+            slope = slope * (1.0 - bias_weight) + target * bias_weight
+            let excess = bias_weight - 5.0
+            if excess > 0.0:
+                var sign = difference if math.abs(difference) > 0.00001 else bias
+                sign = 1.0 if sign > 0.0 else -1.0
+                slope += excess * excess * sign * 40.0
+    if flags & flag_clamp_progressive != 0:
+        let sign = 1.0 if slope >= 0.0 else -1.0
+        var magnitude = sign * slope
+        let range_left = weight_left * (time - previous_time)
+        let range_right = weight_right * (next_time - time)
+        var most_left = sign * (value - previous_value) / range_left if range_left > 0.0 else 0.0
+        var most_right = sign * (next_value - value) / range_right if range_right > 0.0 else 0.0
+        if not (most_left > 0.0): most_left = 0.0
+        if not (most_right > 0.0): most_right = 0.0
+        if magnitude > most_left: magnitude = most_left
+        if magnitude > most_right: magnitude = most_right
+        slope = sign * magnitude
+    return (f64)(f32)slope
+
+## An end key's automatic slope toward its one neighbour
+## (ufbxi_solve_auto_tangent_left/_right).
+func one_sided_slope(span: f64, rise: f64, bias: f64, flags: u32) -> f64:
+    if flags & flag_clamp_progressive != 0: return 0.0
+    if flags & flag_clamp != 0 and math.abs(rise) <= 0.0: return 0.0
+    var slope = rise / span
+    if flags & flag_time_independent == 0:
+        let excess = math.abs(bias) / 100.0 - 5.0
+        if excess > 0.0: slope += excess * excess * (1.0 if bias > 0.0 else -1.0) * 40.0
+    return (f64)(f32)slope
+
+## TCB tangents (ufbxi_solve_tcb): left and right slopes.
+func tcb(tension: f64, continuity: f64, bias: f64, left: f64, right: f64, edge: bool) -> (f64, f64):
+    let factor = 1.0 if edge else 0.5
+    let d00 = factor * (1.0 - tension) * (1.0 + bias) * (1.0 - continuity)
+    let d01 = factor * (1.0 - tension) * (1.0 - bias) * (1.0 + continuity)
+    let d10 = factor * (1.0 - tension) * (1.0 + bias) * (1.0 + continuity)
+    let d11 = factor * (1.0 - tension) * (1.0 - bias) * (1.0 - continuity)
+    return ((f64)(f32)(d00 * left + d01 * right), (f64)(f32)(d10 * left + d11 * right))
