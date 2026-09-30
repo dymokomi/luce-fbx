@@ -17,8 +17,8 @@ file's pose), world matrices and placed points:
 
 | Outcome | Files |
 |---|---:|
-| match | 749 |
-| mismatch | 11 |
+| match | 752 |
+| mismatch | 8 |
 | both reject | 8 |
 | ufbx reads, luce-fbx rejects | 13 |
 | luce-fbx reads, ufbx rejects | 5 |
@@ -26,8 +26,6 @@ file's pose), world matrices and placed points:
 - **luce-fbx rejects:** FBX 5 and older, and FBX 8, as intended (12 files);
   one synthetic file of garbage numbers.
 - **Mismatches:**
-  - three files with faces of more than 256 corners, which luce-fbx
-    triangulates;
   - synthetic edge cases (duplicate object ids, broken NURBS, invalid UTF-8
     axes, quotes in names);
   - one node kind (a Blender armature's root: ours "bone", ufbx "null").

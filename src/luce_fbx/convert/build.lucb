@@ -1,16 +1,13 @@
 ## Mesh sources merged into one geocore mesh. A source is one use of a
 ## geometry: its points placed by a matrix (world, or identity for an
 ## instance prototype), its faces in order. In parallel passes over chunks
-## of each source's faces: count what each chunk keeps (faces of 3 to 256
-## corners; larger faces as fans of triangles; smaller ones dropped), then
+## of each source's faces: count what each chunk keeps (faces of 3 or more
+## corners; smaller ones dropped), then
 ## write offsets and corners (reversed after the first corner under a
 ## mirroring matrix) with the maps back to each source's faces and polygon
 ## vertices, which the attribute passes read. Points are placed in f64 and
 ## stored as f32 over the mesh's origin. geocore computes the face normals
 ## and display triangles when it assembles the mesh.
-
-## geocore's largest face; larger ones become triangles (big_faces.lucb).
-let most_corners: usize = 256
 
 ## One use of a geometry in the merged mesh.
 pub struct Source:
@@ -69,7 +66,6 @@ struct FaceChunk:
     var kept_faces: usize
     var kept_corners: usize
     var dropped: usize
-    var split: usize
     var out_face: usize
     var out_corner: usize
 
@@ -96,7 +92,7 @@ func build_mesh(build: MeshBuild*, geometries: const MeshGeometry[], warnings: W
         var first: usize = 0
         while first < faces:
             let end = first + grain if faces - first > grain else faces
-            try chunks.push(FaceChunk(source = index, first = first, end = end, kept_faces = 0, kept_corners = 0, dropped = 0, split = 0, out_face = 0, out_corner = 0))
+            try chunks.push(FaceChunk(source = index, first = first, end = end, kept_faces = 0, kept_corners = 0, dropped = 0, out_face = 0, out_corner = 0))
             first = end
     var unset: i32[]
     var work = FaceWork(geometries, build.sources.items[..<build.sources.count], chunks.items[..<chunks.count], unset, unset, unset, unset)
@@ -104,7 +100,6 @@ func build_mesh(build: MeshBuild*, geometries: const MeshGeometry[], warnings: W
     var faces: usize = 0
     var corners: usize = 0
     var dropped: usize = 0
-    var split: usize = 0
     var last = build.sources.count
     for index in 0..<chunks.count:
         let chunk = &chunks.items[index]
@@ -118,10 +113,8 @@ func build_mesh(build: MeshBuild*, geometries: const MeshGeometry[], warnings: W
         faces += chunk.kept_faces
         corners += chunk.kept_corners
         dropped += chunk.dropped
-        split += chunk.split
     if last < build.sources.count: build.sources.items[last].face_end = faces
     if dropped > 0: try warnings.count(dropped, " faces with fewer than 3 corners were dropped")
-    if split > 0: try warnings.count(split, " faces of more than 256 corners were made triangles")
     if points > 8388608 or faces > 8388608 or corners > 33554432:
         error(errors.limit, "the FBX meshes exceed geocore's 8,388,608 points or faces or 33,554,432 corners")
     build.points = points
@@ -149,10 +142,6 @@ func count_chunk(context: void*?, index: usize):
         let size = (usize)(starts[face + 1] - starts[face])
         if size < 3:
             chunk.dropped += 1
-        elif size > most_corners:
-            chunk.split += 1
-            chunk.kept_faces += size - 2
-            chunk.kept_corners += (size - 2) * 3
         else:
             chunk.kept_faces += 1
             chunk.kept_corners += size
@@ -172,22 +161,6 @@ func write_chunk(context: void*?, index: usize):
         let start = (usize)starts[face]
         let size = (usize)(starts[face + 1] - starts[face])
         if size < 3: continue
-        if size > most_corners:
-            # Its triangles, each a face (reversed for a mirroring use).
-            let triangles = big_face_triangles(geometry, face)
-            var t: usize = 0
-            while t < triangles.length:
-                work.offsets[out_face] = (i32)out_corner
-                work.face_source[out_face] = (i32)face
-                for at: usize in 0..<3:
-                    let corner = (usize)triangles[t + (0 if at == 0 else 3 - at) if source.flip else t + at]
-                    let taken = start + corner
-                    work.corners[out_corner + at] = point_at(indices, taken) + base
-                    work.corner_source[out_corner + at] = (i32)taken
-                out_face += 1
-                out_corner += 3
-                t += 3
-            continue
         work.offsets[out_face] = (i32)out_corner
         work.face_source[out_face] = (i32)face
         for k in 0..<size:

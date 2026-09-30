@@ -2,7 +2,6 @@ options.lucb
 deformers.lucb
 geometry.lucb
 topology.lucb
-big_faces.lucb
 build.lucb
 placement.lucb
 attributes.lucb

@@ -76,7 +76,6 @@ pub func import_document(document: const Document*, options: const ImportOptions
             try warnings.add("Skipped meshes whose polygons name points they do not have")
             continue
         normalize_layers(geometry)
-        try triangulate_big_faces(geometry)
         if geometry.deformation.any():
             try deform(&scene, &hierarchy, animated, time, geometry, first_model(&gathered, index))
 

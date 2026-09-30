@@ -25,8 +25,8 @@ shears (non-uniform scale under rotation) cannot be a row; its mesh is merged
 instead. Nulls, bones, cameras and lights have no geometry here.
 
 A mirroring matrix (negative determinant) reverses each face's corners after
-the first. Faces of fewer than 3 corners are dropped; faces of more than 256
-corners are triangulated (geocore's current limit), both with a warning.
+the first. Faces of fewer than 3 corners are dropped, with a warning; faces of
+any larger size stay as they are.
 
 ## Layer elements
 
