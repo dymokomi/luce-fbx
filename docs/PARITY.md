@@ -40,3 +40,15 @@ whose takes luce-fbx does not read, and the synthetic and n-gon files above.
 
 Attribute sums are compared too, except normals of skinned meshes: ufbx
 reports a mesh's file normals, luce-fbx turns them with the skin.
+
+## Writing
+
+The local round-trip script (roundtrip.py beside the parity oracle) loads
+each corpus file with fbxdump, saves it with `--save`, and has ufbx and
+luce-fbx read the saved file: their mesh, pos, attr (N, UV and color sets;
+luce-fbx also tangents and creases), mat and curve lines must equal
+fbxdump's dump of the source. All 765 files that load match, at 7400 and
+at 7500; saved with instances or Keep hierarchy, their faces, corners and
+position sums match overall. Blender 5.1 (blender_roundtrip.py, headless)
+imports 755 of the saved files with the same faces, corners and positions;
+the 10 others hold NaN points or degenerate faces Blender drops.

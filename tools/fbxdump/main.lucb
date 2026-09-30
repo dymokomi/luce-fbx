@@ -3,14 +3,16 @@
 ## `attr`, `mat`, `curve`; numbers as %.6g). A local parity script compares
 ## the two over a corpus of FBX files. Fields are separated by tabs.
 ##
-##     fbxdump FILE [--time SECONDS] [--rest]
+##     fbxdump FILE [--time SECONDS] [--rest] [--save OUT [--instances] [--keep] [--7500]]
 ##
 ## --time evaluates animation at a time; --rest leaves blend shapes and
-## skins out.
+## skins out. --save also writes what it imported (merged; with shared
+## meshes as instances, or every model's own with --keep) to OUT with the
+## writer, at 7400 or 7500.
 import c
 import memory
 import geocore_parallel as pool
-from fbx_kernel import Document, Scene, Hierarchy, Kind, Animation, ImportOptions, Warnings, import_document, read_file
+from fbx_kernel import Document, Scene, Hierarchy, Kind, Animation, ImportOptions, Warnings, import_document, read_file, write_file, ExportOptions, encode_set
 import math
 import strings
 from geocore import Matrix4, Vector3, Mesh
@@ -34,9 +36,17 @@ pub func main(arguments: str[]) -> i32!:
     defer scene.close()
     var time = math.nan
     var rest = false
+    var save = ""
+    var keep = false
+    var instances = false
+    var version: u32 = 0
     for at in 2..<arguments.length:
         if arguments[at] == "--time" and at + 1 < arguments.length: time = try strings.parse_f64(arguments[at + 1])
         if arguments[at] == "--rest": rest = true
+        if arguments[at] == "--save" and at + 1 < arguments.length: save = arguments[at + 1]
+        if arguments[at] == "--keep": keep = true
+        if arguments[at] == "--instances": instances = true
+        if arguments[at] == "--7500": version = 7500
     var animation = scene.animation() catch failure:
         print(f"error {failure.message}")
         return 1
@@ -68,6 +78,22 @@ pub func main(arguments: str[]) -> i32!:
     defer dispose_set(set)
     if let mesh = set_mesh(set): try dump_mesh(mesh)
     if let found = set_find(set, curves_type()): try dump_curves((const Curves*)found)
+    if save.length > 0:
+        let saving = ImportOptions(keep_hierarchy = keep, instancing = instances, convert_units = false, normals = true, time = time, deform = not rest)
+        let shared = import_document(&document, &saving, &warnings) catch failure:
+            print(f"error import {failure.message}")
+            return 1
+        defer dispose_set(shared)
+        var notes = Warnings()
+        defer notes.close()
+        let export_options = ExportOptions(version = version, deflate = true)
+        let bytes = encode_set(shared, &export_options, &notes) catch failure:
+            print(f"error save {failure.message}")
+            return 1
+        defer free(bytes) in memory.heap
+        try write_file(save, bytes)
+        let text = (str)notes.text.view()
+        if text.length > 0: print(f"saved with warnings: {text}")
     return 0
 
 ## Per path: its curves' kind (nurbs or line) and control point count.

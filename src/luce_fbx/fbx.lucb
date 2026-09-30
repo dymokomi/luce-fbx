@@ -1,11 +1,14 @@
 ## The luce-fbx export: FBX for Luce. Loading FBX files (binary and ASCII)
-## as luce-geocore GeometrySets. Everything here is a thin entry point; the
-## work is in document/, scene/ and convert/.
+## as luce-geocore GeometrySets, and saving GeometrySets as binary FBX.
+## Everything here is a thin entry point; the work is in document/, scene/,
+## convert/ and writer/.
 import interop
 import math
 import memory
 import luce_fbx.source as source
 import luce_fbx.convert as convert
+import luce_fbx.writer as writer
+import luce_fbx.errors as errors
 from luce_fbx.document import Document
 from luce_fbx.scene import Scene, Animation, absent
 from geocore import GeometrySet
@@ -41,6 +44,20 @@ pub struct Fbx:
         let set = try convert.import_document(&document, &options, &warnings)
         remember(&warnings)
         return try adopt_set(set)
+
+    ## Write `set` to `path` as binary FBX (docs/MAPPING.md, "Writing"):
+    ## version 7400, or 7500 when asked (0 picks 7500 only when the file
+    ## needs 64-bit offsets); `deflate` compresses arrays over 128 bytes.
+    ## What was left out is in `warnings()`.
+    pub static func save(set: interop.Reference[GeometrySet], path: str, version: i64 = 0, deflate: bool = true) -> !:
+        if version != 0 and version != 7400 and version != 7500: error(errors.unsupported, "FBX writing supports versions 7400 and 7500")
+        var warnings = convert.Warnings()
+        defer warnings.close()
+        let options = writer.ExportOptions(version = (u32)version, deflate = deflate)
+        let data = try writer.encode_set(try set.get(), &options, &warnings)
+        defer free(data) in memory.heap
+        try source.write(path, data)
+        remember_text(warnings.text.view())
 
     ## A summary of the FBX file at `path`, one "key: value" per line:
     ## version, encoding, creator, up axis, meters per unit, frame rate, the
@@ -90,7 +107,9 @@ func append(out: Growing[u8]*, text: str) -> !:
     for byte in text.bytes: try out.push(byte)
 
 func remember(warnings: const convert.Warnings*):
-    let text = warnings.text.view()
+    remember_text(warnings.text.view())
+
+func remember_text(text: const u8[]):
     var length = text.length
     if length > last_warnings.length:
         length = last_warnings.length

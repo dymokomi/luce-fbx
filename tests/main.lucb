@@ -9,6 +9,7 @@ import document_checks
 import scene_checks
 import convert_checks
 import anim_checks
+import writer_checks
 
 ## Counts live blocks and fails the allocation after `remaining` more.
 struct Tracker: memory.Allocator:
@@ -95,5 +96,10 @@ pub func main(arguments: str[]) -> i32!:
     try anim_checks.animated()
     settle(&tracker, "animation")
     inject(&tracker, anim_checks.animated, "animation")
+    try writer_checks.all()
+    settle(&tracker, "writing")
+    inject(&tracker, writer_checks.default_cube, "writing the default cube")
+    inject(&tracker, writer_checks.curves, "writing curves")
+    inject(&tracker, writer_checks.instances, "writing instances")
     print("PASS luce-fbx Base checks")
     return 0

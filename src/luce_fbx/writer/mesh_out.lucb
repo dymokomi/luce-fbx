@@ -1,0 +1,191 @@
+## A mesh as Geometry objects, one per `path` (docs/MAPPING.md, "Writing"):
+## each part's points in first-use order (placed back at the mesh origin, as
+## f64 Vertices), PolygonVertexIndex (a face's last corner as ~index),
+## Edges (each edge's first polygon vertex) and a layer element per
+## attribute FBX has one for:
+##
+## | Attribute | Layer element |
+## |---|---|
+## | `N`, `N2`, ... | Normal (Direct) |
+## | `tangentu*`, `tangentv*` | Tangent, Binormal (Direct) |
+## | `uv`, `uv2`, ... | UV (IndexToDirect, identity index) |
+## | `Cd*` with `Alpha*` | Color, RGBA (IndexToDirect, identity index) |
+## | face `smoothing_group`, else edge group `sharp` | Smoothing (ByPolygon / ByEdge, 0 sharp) |
+## | edge `crease`, point `corner_sharpness` | EdgeCrease, VertexCrease (/ 10) |
+## | face group `hole`, edge group `hidden` | Hole, Visibility (0 hidden) |
+## | face text `material` | Material (IndexToDirect into the model's materials) |
+##
+## The mapping follows the domain: point ByVertice, corner ByPolygonVertex,
+## face ByPolygon, edge ByEdge. A mesh with neither normals nor smoothing is
+## written flat (Smoothing ByPolygon, all 0), as geocore shows it.
+
+## One Geometry's share of the mesh: global element ids in local order.
+struct MeshPart:
+    var path_index: i32
+    var faces: Growing[i32]
+    var points: Growing[i32]
+    var corners: Growing[i32]
+    var edges: Growing[i32]
+    ## Each local edge's first local polygon vertex.
+    var edge_corners: Growing[i32]
+    ## Each local polygon vertex's local point.
+    var corner_points: Growing[i32]
+
+    mutating func close():
+        self.faces.close()
+        self.points.close()
+        self.corners.close()
+        self.edges.close()
+        self.edge_corners.close()
+        self.corner_points.close()
+
+func new_part(path_index: i32) -> MeshPart:
+    return MeshPart(path_index = path_index, faces = Growing[i32](), points = Growing[i32](), corners = Growing[i32](), edges = Growing[i32](), edge_corners = Growing[i32](), corner_points = Growing[i32]())
+
+func close_parts(parts: Growing[MeshPart]*):
+    for at in 0..<parts.count: parts.items[at].close()
+    parts.close()
+
+## Numbering scratch shared by a mesh's parts: global point and edge to
+## local, stamped by part.
+struct Numbering:
+    var point_local: i32[]
+    var point_stamp: i32[]
+    var edge_local: i32[]
+    var edge_stamp: i32[]
+
+    mutating func release():
+        if self.point_local.length > 0: free(self.point_local) in memory.heap
+        if self.point_stamp.length > 0: free(self.point_stamp) in memory.heap
+        if self.edge_local.length > 0: free(self.edge_local) in memory.heap
+        if self.edge_stamp.length > 0: free(self.edge_stamp) in memory.heap
+
+## Write `mesh`'s parts as Geometry objects; their attachments go to the
+## export's list.
+func prepare_mesh(job: Export*, mesh: const Mesh*) -> !:
+    if mesh.face_count() == 0: return
+    var parts = Growing[MeshPart]()
+    defer close_parts(&parts)
+    let path_at = mesh.find_attribute("path", (i64)(u8)Domain.face)
+    let paths: const Attribute*? = (try attribute_entry(mesh, path_at)) if path_at >= 0 else none
+    try split_parts(mesh, paths, &parts)
+    let edge_total = (usize)try mesh.edge_count()
+    let point_total = (usize)mesh.point_count()
+    var numbering = Numbering(point_local = empty_ints32(), point_stamp = empty_ints32(), edge_local = empty_ints32(), edge_stamp = empty_ints32())
+    defer numbering.release()
+    numbering.point_local = try alloc i32[point_total] in memory.heap
+    numbering.point_stamp = try alloc i32[point_total] in memory.heap
+    numbering.edge_local = try alloc i32[edge_total] in memory.heap
+    numbering.edge_stamp = try alloc i32[edge_total] in memory.heap
+    for at in 0..<point_total: numbering.point_stamp[at] = -1
+    for at in 0..<edge_total: numbering.edge_stamp[at] = -1
+    try note_left_out(job, mesh)
+    for at in 0..<parts.count:
+        let part = &parts.items[at]
+        try number_part(mesh, part, (i32)at, &numbering, parts.count == 1)
+        var path = ""
+        if let entry = paths: path = entry.text_at((usize)part.faces.items[0])
+        let geometry = job.new_id()
+        let first_material = job.material_refs.count
+        try write_geometry(job, mesh, part, geometry, leaf_name(path, "mesh"))
+        let start = job.names.count
+        for byte in path.bytes: try job.names.push(byte)
+        try job.attaches.push(Attach(path_start = start, path_length = path.length, fallback = "mesh", geometry = geometry, kind = 1, first_material = first_material, material_count = job.material_refs.count - first_material))
+
+## Faces grouped by `path` text (first appearance order), or all together.
+func split_parts(mesh: const Mesh*, paths: const Attribute*?, parts: Growing[MeshPart]*) -> !:
+    let faces = (usize)mesh.face_count()
+    if paths == none:
+        try parts.push(new_part(-1))
+        for face in 0..<faces: try parts.items[0].faces.push((i32)face)
+        return
+    let entry = paths else return
+    var part_of = Growing[i32]()
+    defer part_of.close()
+    for face in 0..<faces:
+        let text = (i32)entry.number(face, 0)
+        let slot = (usize)(text + 1)
+        if part_of.count <= slot: try part_of.extend(slot + 1, -1)
+        if part_of.items[slot] < 0:
+            part_of.items[slot] = (i32)parts.count
+            try parts.push(new_part(text))
+        try parts.items[(usize)part_of.items[slot]].faces.push((i32)face)
+
+## The part's points, corners and edges in first-use order; a part of
+## the whole mesh keeps the mesh's own point order (unused points too).
+func number_part(mesh: const Mesh*, part: MeshPart*, id: i32, numbering: Numbering*, whole: bool) -> !:
+    let offsets = offset_span(mesh)
+    let corners = corner_span(mesh)
+    let corner_edges = try corner_edge_span(mesh)
+    if whole:
+        for point in 0..<(usize)mesh.point_count():
+            numbering.point_stamp[point] = id
+            numbering.point_local[point] = (i32)point
+            try part.points.push((i32)point)
+    for face in part.faces.view():
+        for corner in offsets[(usize)face]..<offsets[(usize)face + 1]:
+            let point = (usize)corners[(usize)corner]
+            if numbering.point_stamp[point] != id:
+                numbering.point_stamp[point] = id
+                numbering.point_local[point] = (i32)part.points.count
+                try part.points.push((i32)point)
+            let edge = (usize)corner_edges[(usize)corner]
+            if numbering.edge_stamp[edge] != id:
+                numbering.edge_stamp[edge] = id
+                numbering.edge_local[edge] = (i32)part.edges.count
+                try part.edges.push((i32)edge)
+                try part.edge_corners.push((i32)part.corners.count)
+            try part.corners.push(corner)
+            try part.corner_points.push(numbering.point_local[point])
+
+## One Geometry: points, polygons, edges and layer elements.
+func write_geometry(job: Export*, mesh: const Mesh*, part: const MeshPart*, id: i64, name: str) -> !:
+    let tree = &job.tree
+    try tree.begin("Geometry")
+    try tree.int64(id)
+    try tree.object_name(name, "Geometry")
+    try tree.string("Mesh")
+    try tree.leaf_int32("GeometryVersion", 124)
+    # Vertices, placed back at the mesh origin in f64.
+    let origin = mesh_origin(mesh)
+    let positions = point_span(mesh)
+    let points = part.points.count
+    let vertices = try alloc u8[points * 24] in memory.heap
+    let xyz = f64[]((f64*)vertices.data, points * 3)
+    for at in 0..<points:
+        let p = positions[(usize)part.points.items[at]]
+        xyz[at * 3] = (f64)p.x + origin.x
+        xyz[at * 3 + 1] = (f64)p.y + origin.y
+        xyz[at * 3 + 2] = (f64)p.z + origin.z
+    try tree.begin("Vertices")
+    try tree.array('d', points * 3, vertices)
+    tree.end()
+    # Polygons: the face's last corner as ~index.
+    let offsets = offset_span(mesh)
+    let total = part.corners.count
+    let indices = try alloc u8[total * 4] in memory.heap
+    let out = i32[]((i32*)indices.data, total)
+    var at: usize = 0
+    for face in part.faces.view():
+        let first = (usize)offsets[(usize)face]
+        let end = (usize)offsets[(usize)face + 1]
+        for corner in first..<end:
+            let number = part.corner_points.items[at]
+            out[at] = number if corner + 1 < end else -number - 1
+            at += 1
+    try tree.begin("PolygonVertexIndex")
+    try tree.array('i', total, indices)
+    tree.end()
+    try tree.begin("Edges")
+    try tree.ints(part.edge_corners.view())
+    tree.end()
+    var layers = LayerList()
+    defer layers.close()
+    try write_layers(job, mesh, part, &layers)
+    try write_layer_table(tree, &layers)
+    tree.end()
+    job.geometry_count += 1
+
+func empty_ints32() -> i32[]:
+    var none_yet: i32[]
+    return none_yet

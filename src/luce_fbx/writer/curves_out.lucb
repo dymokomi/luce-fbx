@@ -1,0 +1,218 @@
+## Curves as curve geometries, grouped by their `path` (the reader's
+## Line and NurbsCurve forms, docs/MAPPING.md):
+##
+## - a path's poly curves share one Line: Points and PointsIndex, each run
+##   ending at ~index (a cyclic one closes on its first point);
+## - every other curve is one NurbsCurve (Order, Form, Points as x, y, z,
+##   w, KnotVector): a NURBS curve keeps its order, knots (geocore's, custom
+##   or generated) and weights, a cyclic one written Periodic (its points
+##   once, its knots with the wrapped tail); a Bezier curve is the same
+##   cubic as a NURBS curve with triple knots, and a Catmull-Rom curve the
+##   cubic Bezier through its points with tangents (next - previous) / 2.
+
+## One path's curves.
+struct CurveGroup:
+    var path_index: i32
+    var curves: Growing[i32]
+
+    mutating func close():
+        self.curves.close()
+
+func close_groups(groups: Growing[CurveGroup]*):
+    for at in 0..<groups.count: groups.items[at].close()
+    groups.close()
+
+## Write `curves` as geometries; their attachments go to the export's list.
+func prepare_curves(job: Export*, curves: const Curves*) -> !:
+    if curves.curve_count() == 0: return
+    let paths = curves.find("path", Domain.face)
+    var groups = Growing[CurveGroup]()
+    defer close_groups(&groups)
+    var group_of = Growing[i32]()
+    defer group_of.close()
+    for curve in 0..<curves.curve_count():
+        var text: i32 = -1
+        if let entry = paths:
+            if entry.kind == DataType.text: text = (i32)entry.number(curve, 0)
+        let slot = (usize)(text + 1)
+        if group_of.count <= slot: try group_of.extend(slot + 1, -1)
+        if group_of.items[slot] < 0:
+            group_of.items[slot] = (i32)groups.count
+            try groups.push(CurveGroup(path_index = text, curves = Growing[i32]()))
+        try groups.items[(usize)group_of.items[slot]].curves.push((i32)curve)
+    for group in groups.view():
+        var path = ""
+        if let entry = paths:
+            if entry.kind == DataType.text: path = entry.text_at((usize)group.curves.items[0])
+        let name = leaf_name(path, "curves")
+        var any_poly = false
+        for curve in group.curves.view():
+            if curves.settings((usize)curve).kind == CurveType.poly: any_poly = true
+        if any_poly:
+            let id = job.new_id()
+            try write_line(job, curves, group.curves.view(), id, name)
+            try attach_curve(job, path, id)
+        for curve in group.curves.view():
+            let settings = curves.settings((usize)curve)
+            if settings.kind == CurveType.poly: continue
+            let (_, count) = curves.range((usize)curve)
+            if count < 2 or (settings.kind == CurveType.nurbs and count < settings.order):
+                try job.warnings.add("Curves of fewer points than FBX can hold were left out")
+                continue
+            let id = job.new_id()
+            try write_nurbs(job, curves, (usize)curve, &settings, id, name)
+            try attach_curve(job, path, id)
+
+func attach_curve(job: Export*, path: str, id: i64) -> !:
+    let start = job.names.count
+    for byte in path.bytes: try job.names.push(byte)
+    try job.attaches.push(Attach(path_start = start, path_length = path.length, fallback = "curves", geometry = id, kind = 2, first_material = job.material_refs.count, material_count = 0))
+
+## Open a curve geometry of subclass `kind`.
+func open_curve(tree: Tree*, id: i64, name: str, kind: str) -> !:
+    try tree.begin("Geometry")
+    try tree.int64(id)
+    try tree.object_name(name, "Geometry")
+    try tree.string(kind)
+    try tree.leaf_int32("GeometryVersion", 124)
+    try tree.leaf_string("Type", kind)
+
+## The poly curves among `list` as one Line.
+func write_line(job: Export*, curves: const Curves*, list: const i32[], id: i64, name: str) -> !:
+    var points = Growing[f64]()
+    defer points.close()
+    var index = Growing[i32]()
+    defer index.close()
+    for curve in list:
+        let settings = curves.settings((usize)curve)
+        if settings.kind != CurveType.poly: continue
+        let (first, count) = curves.range((usize)curve)
+        let base = (i32)(points.count // 3)
+        for at in 0..<count:
+            let p = curves.point(first + at)
+            try points.push(p.x)
+            try points.push(p.y)
+            try points.push(p.z)
+            if at + 1 < count or settings.cyclic: try index.push(base + (i32)at)
+            else: try index.push(-(base + (i32)at) - 1)
+        if settings.cyclic: try index.push(-base - 1)
+    let tree = &job.tree
+    try open_curve(tree, id, name, "Line")
+    try tree.leaf_int32("LineVersion", 100)
+    try tree.begin("Points")
+    try tree.reals(points.view())
+    tree.end()
+    try tree.begin("PointsIndex")
+    try tree.ints(index.view())
+    tree.end()
+    tree.end()
+    job.geometry_count += 1
+
+## One curve as a NurbsCurve.
+func write_nurbs(job: Export*, curves: const Curves*, curve: usize, settings: const CurveSettings*, id: i64, name: str) -> !:
+    var points = Growing[f64]()
+    defer points.close()
+    var knots = Growing[f64]()
+    defer knots.close()
+    let (first, count) = curves.range(curve)
+    var order: usize = 4
+    var periodic = false
+    if settings.kind == CurveType.nurbs:
+        order = settings.order
+        periodic = settings.cyclic
+        for at in 0..<count: try push_point(&points, curves.point(first + at), weight_of(curves, first + at))
+        try append_knots(curves, curve, settings, count, &knots)
+    else:
+        # A cubic Bezier: each point, then its right and the next point's
+        # left handle; a cyclic curve closes on its first point.
+        let segments = count if settings.cyclic else count - 1
+        for at in 0..<segments + 1:
+            let point = at % count
+            try push_point(&points, curves.point(first + point), 1.0)
+            if at < segments:
+                let next = (at + 1) % count
+                try push_point(&points, handle(curves, first, count, point, true, settings), 1.0)
+                try push_point(&points, handle(curves, first, count, next, false, settings), 1.0)
+        for _ in 0..<4: try knots.push(0.0)
+        for segment in 1..<segments:
+            for _ in 0..<3: try knots.push((f64)segment)
+        for _ in 0..<4: try knots.push((f64)segments)
+    let tree = &job.tree
+    try open_curve(tree, id, name, "NurbsCurve")
+    try tree.leaf_int32("NurbsCurveVersion", 100)
+    try tree.leaf_int32("Order", (i32)order)
+    try tree.leaf_int32("Dimension", 3)
+    try tree.leaf_string("Form", "Periodic" if periodic else "Open")
+    try tree.leaf_int32("Rational", 1)
+    try tree.begin("Points")
+    try tree.reals(points.view())
+    tree.end()
+    try tree.begin("KnotVector")
+    try tree.reals(knots.view())
+    tree.end()
+    tree.end()
+    job.geometry_count += 1
+
+func push_point(out: Growing[f64]*, p: Vector3, w: f64) -> !:
+    try out.push(p.x)
+    try out.push(p.y)
+    try out.push(p.z)
+    try out.push(w)
+
+func weight_of(curves: const Curves*, point: usize) -> f64:
+    let weights = curves.find("w", Domain.point) else return 1.0
+    return weights.number(point, 0)
+
+## A Bezier point's handle (right: after it), absolute: its stored
+## handle_l / handle_r, else the automatic one (as luce-usd writes them),
+## which for a Catmull-Rom curve is its own tangent.
+func handle(curves: const Curves*, first: usize, count: usize, at: usize, right: bool, settings: const CurveSettings*) -> Vector3:
+    if settings.kind == CurveType.bezier:
+        if let stored = curves.find("handle_r" if right else "handle_l", Domain.point):
+            let point = first + at
+            return Vector3(stored.number(point, 0), stored.number(point, 1), stored.number(point, 2)).add(curves_origin(curves))
+    let p = curves.point(first + at)
+    var previous = Vector3()
+    var next = Vector3()
+    if settings.cyclic:
+        previous = curves.point(first + (at + count - 1) % count)
+        next = curves.point(first + (at + 1) % count)
+    else:
+        previous = curves.point(first + at - 1) if at > 0 else p.multiply_scalar(2.0).subtract(curves.point(first + 1))
+        next = curves.point(first + at + 1) if at + 1 < count else p.multiply_scalar(2.0).subtract(curves.point(first + at - 1))
+    let tangent = next.subtract(previous).multiply_scalar(1.0 / 6.0)
+    return p.add(tangent) if right else p.subtract(tangent)
+
+## A NURBS curve's knots as geocore evaluates them (custom ones, else its
+## uniform or endpoint knots), a cyclic curve's wrapped tail included.
+func append_knots(curves: const Curves*, curve: usize, settings: const CurveSettings*, points: usize, out: Growing[f64]*) -> !:
+    let order = settings.order
+    let total = points + order + (order - 1 if settings.cyclic else 0)
+    let custom = curves.custom_knots(curve)
+    if settings.knot_mode == KnotMode.custom and custom.length == points + order:
+        for knot in custom: try out.push((f64)knot)
+        if settings.cyclic:
+            let shift = (f64)custom[custom.length - 1] - (f64)custom[order - 1]
+            for at in 0..<order - 1: try out.push((f64)custom[order + at] + shift)
+        return
+    let start = out.count
+    try out.fill(start + total, 0.0)
+    let values = out.items[start..<start + total]
+    let endpoint = settings.knot_mode != KnotMode.uniform
+    let head = (order - (1 if settings.cyclic else 0)) if endpoint else 1
+    let tail = 2 * order - 1 if settings.cyclic else (order if endpoint else 0)
+    var repeat = head
+    var current: f64 = 0.0
+    var from_at: usize = 0
+    if endpoint and settings.cyclic:
+        values[0] = current
+        current += 1.0
+        from_at = 1
+    for at in from_at..<total - tail:
+        values[at] = current
+        repeat -= 1
+        if repeat == 0:
+            current += 1.0
+            repeat = 1
+    let tail_first = total - tail
+    for at in 0..<tail: values[tail_first + at] = current + (values[at] - values[0])

@@ -1,7 +1,8 @@
 # FBX and GeometrySet
 
-How `Fbx.load` turns an FBX scene into a luce-geocore `GeometrySet`. The code
-is in `src/luce_fbx/convert/`.
+How `Fbx.load` turns an FBX scene into a luce-geocore `GeometrySet` (the
+code is in `src/luce_fbx/convert/`), and how `Fbx.save` writes one back
+([Writing](#writing), `src/luce_fbx/writer/`).
 
 ## Models and meshes
 
@@ -123,3 +124,61 @@ right-handed and scaled to meters, and the details say +Y and 1.
 - NURBS surfaces and patches.
 - User data layers and custom properties.
 - FBX 5 and older, and FBX 8.
+
+## Writing
+
+`Fbx.save(set, path, version, deflate)` writes binary FBX: 7400 by default
+(7500 when asked, or when the file needs 64-bit offsets), laid out as
+Blender's exporter writes it (header, FBXHeaderExtension with a fixed 1970
+timestamp so saves are reproducible, GlobalSettings, Documents, References,
+Definitions, Objects, Connections, Takes). Arrays over 128 bytes are
+deflated, one pool task per array; `deflate = false` stores them raw.
+
+- **Meshes.** Faces are grouped by their `path` text. Each group is one
+  Geometry and one Model at that path (its names split at `/`; missing
+  ancestors are Null models); faces without a path go to a model named
+  `mesh`. Points are written in world space (f64, the mesh origin added
+  back), so models have identity transforms; a mesh of one group keeps its
+  point order. `PolygonVertexIndex` ends each face with ~index, and `Edges`
+  names each edge's first polygon vertex.
+- **Layer elements**, the reverse of the table above: `N*` Normal,
+  `tangentu*`/`tangentv*` Tangent/Binormal, `uv*` UV and `Cd*` with
+  `Alpha*` Color (RGBA; both IndexToDirect with an identity index),
+  `smoothing_group` or else `sharp` Smoothing (a mesh with neither and no
+  normals is written flat, as geocore shows it), `crease` and
+  `corner_sharpness` EdgeCrease and VertexCrease (/ 10), `hole` Hole,
+  `hidden` Visibility. The mapping follows the domain (point ByVertice,
+  corner ByPolygonVertex, face ByPolygon, edge ByEdge). Set k of each goes
+  in Layer k.
+- **Materials.** Each distinct `material` text is one Material (Phong,
+  grey), connected to the models using it in the order their layer indexes
+  them (AllSame when a model uses one). Faces without a material text use
+  one named `default`; a model whose faces have none gets no material.
+- **Instances.** A prototype set is written once. Each row is a Model with
+  its Lcl Translation, Lcl Rotation (geocore's XYZ angles turned into FBX's
+  XYZ order, degrees) and Lcl Scaling, and Visibility 0 when hidden: the
+  prototype's one mesh model itself when it has nothing else (sharing its
+  Geometry, FBX's own instancing), else a Null holding the prototype's
+  models. Rows are named after their prototype's path (FBX needs a name;
+  the set has none per row).
+- **Curves.** A path's poly curves share one Line (a cyclic curve closes on
+  its first point). Every other curve is a NurbsCurve: NURBS keep their
+  order, knots and weights (cyclic ones Periodic, their knots with the
+  wrapped tail); Bezier and Catmull-Rom curves are written as the same cubic
+  NURBS curve (Catmull-Rom tangents (next - previous) / 2).
+- **Settings.** `fbx.upAxis`, `fbx.frontAxis`, `fbx.metersPerUnit` and
+  `fbx.frameRate` details (as a load records them) become UpAxis, FrontAxis,
+  CoordAxis (up x front), UnitScaleFactor (x 100), TimeMode and
+  CustomFrameRate; without them the file is Y-up, +Z front, meters, 24 fps.
+
+What does not survive: other attributes (a warning names each), point
+clouds, volumes, SDFs and CAD (a warning per component), animation, skins
+and blend shapes (a deformed load writes the deformed points), cameras,
+lights and material properties.
+
+Every file of the corpus that loads (765 of 786) saves and reads back the
+same in ufbx and in luce-fbx: faces, corners, position sums, normals, UV
+and color sets and materials per path, at 7400 and 7500; with instances or
+Keep hierarchy, the same faces and positions overall. Blender 5.1 imports
+755 of them the same (faces, corners, positions); the other 10 are
+synthetic files with NaN points or degenerate faces Blender drops.

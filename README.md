@@ -1,7 +1,7 @@
 # luce-fbx
 
 FBX for Luce, in **Luce Base**: binary and ASCII FBX files read into
-luce-geocore `GeometrySet`s.
+luce-geocore `GeometrySet`s, and GeometrySets written as binary FBX.
 
 ```luce
 from fbx import Fbx
@@ -9,6 +9,7 @@ from fbx import Fbx
 let scene = Fbx.load("character.fbx")
 let merged = Fbx.load("city.fbx", instancing = false, convert_units = true)
 print(Fbx.warnings())
+Fbx.save(scene, "copy.fbx")
 ```
 
 `Fbx.load(path, keep_hierarchy, instancing, convert_units, normals)`:
@@ -26,6 +27,12 @@ print(Fbx.warnings())
 
 `Fbx.info(path)` summarizes a file: version, axes, units, frame rate, the
 animation's time span and object counts.
+
+`Fbx.save(set, path, version, deflate)` writes binary FBX 7.4 (or 7.5): the
+mesh split by `path` into models with its layers and materials, instances as
+models sharing their prototype's geometry, curves as lines and NURBS curves,
+and the `fbx.*` details as the file's settings. Blender and ufbx read what it
+writes; MAPPING.md's [Writing](docs/MAPPING.md#writing) has the details.
 
 [docs/MAPPING.md](docs/MAPPING.md) states the whole mapping and what is left
 out. [docs/PARITY.md](docs/PARITY.md) records the comparison with ufbx.
@@ -61,6 +68,9 @@ their rest values with a warning (docs/MAPPING.md, "What is left out").
   transforms.
 - `convert/`: the GeometrySet: meshes merged in parallel passes, layers as
   attributes, instances, curves.
+- `writer/`: a GeometrySet as a node tree (meshes by path, layers,
+  materials, models, instances, curves), then encoded with its arrays
+  deflated in parallel.
 
 Every size a file declares is checked against the bytes that hold it (a zlib
 array against what its stream can inflate to) and the whole load against
@@ -75,7 +85,10 @@ turn, then the Luce API tests (tests/api). They cover the fixtures in
 tests/fixtures (ufbx's test files under its MIT license, and ours), one cube
 in six encodings, every truncation of a file, a byte-corruption sweep through
 the import, the transform stack against ufbx's matrices, and the conversion
-against ufbx's counts and sums. `tools/fbxdump` prints what luce-fbx reads in
-the form the local ufbx parity oracle prints.
+against ufbx's counts and sums, and saves read back (bit-exact points,
+layers, materials, curves, instance rows, 7500 and raw arrays, a
+1000-corner n-gon). `tools/fbxdump` prints what luce-fbx reads in the form
+the local ufbx parity oracle prints; `--save` also writes it, for the local
+round-trip checks against ufbx and Blender.
 
 Apache-2.0 or MIT.

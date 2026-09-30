@@ -1,0 +1,199 @@
+## A Tree as binary FBX, laid out as Blender's encoder (encode_bin.py) and
+## the FBX SDK write it:
+##
+## - a 27-byte header: "Kaydara FBX Binary  \0", 0x1a 0x00, the version;
+## - node records: end offset, property count and property bytes (u32
+##   each in 7400, u64 in 7500), the name's length and bytes, the
+##   properties, the children, and a null record after children (or after
+##   a node with neither properties nor children);
+## - a null record closing the top level, then the footer (Blender's fixed
+##   FileId/CreationTime pair and footer id, padding to 16, the version,
+##   120 zero bytes and the closing magic).
+##
+## Arrays over 128 bytes are deflated first, one pool task per array (zlib,
+## encoding 1); smaller ones are stored raw (encoding 0), as Blender does.
+
+let magic: u8[23] = [0x4b, 0x61, 0x79, 0x64, 0x61, 0x72, 0x61, 0x20, 0x46, 0x42, 0x58, 0x20, 0x42, 0x69, 0x6e, 0x61, 0x72, 0x79, 0x20, 0x20, 0x00, 0x1a, 0x00]
+pub let file_id: u8[16] = [0x28, 0xb3, 0x2a, 0xeb, 0xb6, 0x24, 0xcc, 0xc2, 0xbf, 0xc8, 0xb0, 0x2a, 0xa9, 0x2b, 0xfc, 0xf1]
+pub let creation_time: str = "1970-01-01 10:00:00:000"
+let foot_id: u8[16] = [0xfa, 0xbc, 0xab, 0x09, 0xd0, 0xc8, 0xd4, 0x66, 0xb1, 0x76, 0xfb, 0x83, 0x1c, 0xf7, 0x26, 0x7e]
+let foot_magic: u8[16] = [0xf8, 0x5a, 0x8c, 0x6a, 0xde, 0xf5, 0xd9, 0x7e, 0xec, 0xe9, 0x0c, 0xe3, 0x75, 0x8f, 0x29, 0x0b]
+
+## Arrays of more bytes than this are deflated.
+let pack_above: usize = 128
+
+## What an encode does.
+struct Encoding:
+    ## 7400, or 7500 (64-bit records); 0 picks 7400 unless the file needs
+    ## 7500's offsets.
+    var version: u32
+    var deflate: bool
+
+struct PackWork:
+    var blobs: Blob[]
+
+## Deflate blob `index` when it is large enough.
+func pack_blob(context: void*?, index: usize):
+    let work = (PackWork*)(context else return)
+    let blob = &work.blobs[index]
+    if blob.raw.length <= pack_above: return
+    blob.packed = compress.compress(blob.raw) catch failure:
+        discard(failure)
+        blob.failed = true
+        recover empty_bytes()
+
+## The bytes of `tree` as an FBX file on memory.heap; the caller frees them.
+## `version_prop` is the header's FBXVersion property, set to the version
+## written.
+func encode_tree(tree: Tree*, requested: u32, deflate: bool, version_prop: usize) -> u8[]!:
+    if deflate and tree.blobs.count > 0:
+        var work = PackWork(blobs = tree.blobs.items[..<tree.blobs.count])
+        pool.run(tree.blobs.count, pack_blob, (void*)&work)
+        for blob in tree.blobs.view():
+            if blob.failed: error(memory.exhausted, "out of memory compressing an FBX array")
+    var version = requested
+    var sizes = try alloc u64[tree.nodes.count] in memory.heap
+    defer free(sizes) in memory.heap
+    var total = measure(tree, sizes, false)
+    if version == 0:
+        version = 7400
+        if total > 4294967295: version = 7500
+    if version >= 7500: total = measure(tree, sizes, true)
+    elif total > 4294967295: error(errors.limit, "the FBX file needs 64-bit offsets: write version 7500")
+    tree.props.items[version_prop].bits = (u64)version
+    let data = try alloc u8[(usize)total] in memory.heap
+    errdefer free(data) in memory.heap
+    var out = Output(data = data, at = 0, wide = version >= 7500)
+    for byte in magic: out.put8(byte)
+    out.put32(version)
+    for root in tree.roots.view(): write_node(tree, sizes, root, &out)
+    out.zeros(header_bytes(out.wide))
+    for byte in foot_id: out.put8(byte)
+    out.zeros(4)
+    out.zeros(padding(out.at))
+    out.put32(version)
+    out.zeros(120)
+    for byte in foot_magic: out.put8(byte)
+    if out.at != data.length: error(errors.invalid, "the FBX encoder's layout does not add up")
+    return data
+
+## A record header's bytes (the null record's too).
+func header_bytes(wide: bool) -> usize:
+    return 25 if wide else 13
+
+## Footer padding after the footer id and its four zeros: to a multiple of
+## 16, 16 when already aligned.
+func padding(at: u64) -> usize:
+    let gap = (usize)(((at + 15) & ~(u64)15) - at)
+    return 16 if gap == 0 else gap
+
+## Bytes of one property.
+func prop_bytes(tree: const Tree*, prop: const WProp*) -> u64:
+    match prop.kind:
+        'C', 'B': return 2
+        'Y': return 3
+        'I', 'F': return 5
+        'L', 'D': return 9
+        'S', 'R': return 5 + (u64)prop.length
+        _:
+            let blob = &tree.blobs.items[prop.start]
+            return 13 + (u64)(blob.packed.length if blob.packed.length > 0 else blob.raw.length)
+
+func props_bytes(tree: const Tree*, node: const WNode*) -> u64:
+    var total: u64 = 0
+    for at in node.first_prop..<node.first_prop + node.prop_count:
+        total += prop_bytes(tree, &tree.props.items[(usize)at])
+    return total
+
+## Whether a node ends with a null record: it has children, or nothing.
+func closes_with_null(node: const WNode*, index: u32) -> bool:
+    return node.end > index + 1 or node.prop_count == 0
+
+## Every node's record size (last first, so children are known), and the
+## whole file's size.
+func measure(tree: const Tree*, sizes: u64[], wide: bool) -> u64:
+    let header = (u64)header_bytes(wide)
+    var at = tree.nodes.count
+    while at > 0:
+        at -= 1
+        let node = &tree.nodes.items[at]
+        var size = header + (u64)node.name_length + props_bytes(tree, node)
+        var child = (u32)at + 1
+        while child < node.end:
+            size += sizes[(usize)child]
+            child = tree.nodes.items[(usize)child].end
+        if closes_with_null(node, (u32)at): size += header
+        sizes[at] = size
+    var total: u64 = 27
+    for root in tree.roots.view(): total += sizes[(usize)root]
+    total += header + 20
+    total += (u64)padding(total) + 4 + 120 + 16
+    return total
+
+## A cursor over the output.
+struct Output:
+    var data: u8[]
+    var at: u64
+    var wide: bool
+
+    mutating func put8(value: u8):
+        self.data[(usize)self.at] = value
+        self.at += 1
+
+    mutating func put32(value: u32):
+        memory.write[u32]((void*)&self.data[(usize)self.at], value)
+        self.at += 4
+
+    mutating func put64(value: u64):
+        memory.write[u64]((void*)&self.data[(usize)self.at], value)
+        self.at += 8
+
+    ## A record-header number: u64 in 7500, u32 before.
+    mutating func number(value: u64):
+        if self.wide: self.put64(value)
+        else: self.put32((u32)value)
+
+    mutating func bytes(value: const u8[]):
+        if value.length > 0: memory.copy(self.data[(usize)self.at..], value, value.length)
+        self.at += (u64)value.length
+
+    mutating func zeros(count: usize):
+        for k in 0..<count: self.data[(usize)self.at + k] = 0
+        self.at += (u64)count
+
+## Node `index` and its subtree.
+func write_node(tree: const Tree*, sizes: const u64[], index: u32, out: Output*):
+    let node = &tree.nodes.items[(usize)index]
+    let end = out.at + sizes[(usize)index]
+    out.number(end)
+    out.number((u64)node.prop_count)
+    out.number(props_bytes(tree, node))
+    out.put8((u8)node.name_length)
+    out.bytes(tree.text.items[(usize)node.name_start..<(usize)(node.name_start + node.name_length)])
+    for at in node.first_prop..<node.first_prop + node.prop_count:
+        write_prop(tree, &tree.props.items[(usize)at], out)
+    var child = index + 1
+    while child < node.end:
+        write_node(tree, sizes, child, out)
+        child = tree.nodes.items[(usize)child].end
+    if closes_with_null(node, index): out.zeros(header_bytes(out.wide))
+
+func write_prop(tree: const Tree*, prop: const WProp*, out: Output*):
+    out.put8(prop.kind)
+    match prop.kind:
+        'C', 'B': out.put8((u8)prop.bits)
+        'Y':
+            out.put8((u8)prop.bits)
+            out.put8((u8)(prop.bits >> 8))
+        'I', 'F': out.put32((u32)prop.bits)
+        'L', 'D': out.put64(prop.bits)
+        'S', 'R':
+            out.put32((u32)prop.length)
+            out.bytes(tree.text.items[prop.start..<prop.start + prop.length])
+        _:
+            let blob = &tree.blobs.items[prop.start]
+            let packed = blob.packed.length > 0
+            out.put32((u32)blob.count)
+            out.put32(1 if packed else 0)
+            out.put32((u32)(blob.packed.length if packed else blob.raw.length))
+            out.bytes(blob.packed if packed else blob.raw)

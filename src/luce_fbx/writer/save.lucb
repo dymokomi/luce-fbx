@@ -1,0 +1,297 @@
+## The whole save: the header, GlobalSettings (the set's fbx.* details, else
+## Y-up meters at 24 fps), Documents, References, Definitions, Objects (the
+## set prepared and placed, then its models), Connections and Takes.
+
+## The set's prepared entry, preparing it the first time.
+func prepare(job: Export*, set: const GeometrySet*) -> usize!:
+    for at in 0..<job.prepared.count:
+        if job.prepared.items[at].set == set: return at
+    let first = job.attaches.count
+    var instances: const Instances*? = none
+    for index in 0..<set_component_count(set):
+        let component = set_component(set, index)
+        let kind = component.kind
+        if kind == mesh_component(): try prepare_mesh(job, (const Mesh*)component.data)
+        elif kind == curves_type(): try prepare_curves(job, (const Curves*)component.data)
+        elif kind == instances_component(): instances = (const Instances*)component.data
+        else:
+            var line: u8[256] = ---
+            try job.warnings.add(try format(line, f"FBX has no form for the {kind.name} component; it was left out"))
+    try job.prepared.push(Prepared(set = set, first_attach = first, attach_count = job.attaches.count - first, instances = instances))
+    return job.prepared.count - 1
+
+## Place prepared set `index` under model `parent` (-1: the scene root).
+func place(job: Export*, index: usize, parent: i32, depth: usize) -> !:
+    let entry = job.prepared.items[index]
+    var path = Growing[u8]()
+    defer path.close()
+    for at in entry.first_attach..<entry.first_attach + entry.attach_count:
+        let attach = job.attaches.items[at]
+        # A copy: naming models grows the text the path is in.
+        try path.assign(job.names.items[attach.path_start..<attach.path_start + attach.path_length])
+        let model = try job.model_at(parent, (str)path.view(), attach.fallback)
+        try connect(job, model, &attach)
+    if let instances = entry.instances: try place_rows(job, instances, parent, depth)
+
+## Connect an attachment's geometry and materials to model `model`.
+func connect(job: Export*, model: usize, attach: const Attach*) -> !:
+    let target = &job.models.items[model]
+    if target.kind == 0 or attach.kind == 1: target.kind = attach.kind
+    let id = target.id
+    try job.link(attach.geometry, id)
+    for at in attach.first_material..<attach.first_material + attach.material_count:
+        try job.link(job.material_refs.items[at], id)
+
+## Each instance row as a model placing its prototype: the prototype's one
+## mesh itself when it has nothing else, else a Null holding it.
+func place_rows(job: Export*, instances: const Instances*, parent: i32, depth: usize) -> !:
+    if depth >= most_depth:
+        try job.warnings.add("Instances nested more than 16 deep were left out")
+        return
+    var name = Growing[u8]()
+    defer name.close()
+    for row in 0..<instances.count():
+        let r = instances.row(row)
+        let prototype = try prepare(job, instances.prototype((usize)r.prototype))
+        let entry = job.prepared.items[prototype]
+        let single = entry.attach_count == 1 and entry.instances == none and job.attaches.items[entry.first_attach].kind == 1
+        name.clear()
+        if single:
+            let attach = job.attaches.items[entry.first_attach]
+            try name.assign(leaf_name((str)job.names.items[attach.path_start..<attach.path_start + attach.path_length], "instance").bytes)
+        else: try name.assign("instance".bytes)
+        let model = try job.add_model(parent, (str)name.view(), 0)
+        let target = &job.models.items[model]
+        target.translation = r.translation
+        target.rotation = fbx_euler(r.rotation)
+        target.scale = r.scale
+        target.visible = r.visible
+        if single:
+            let attach = job.attaches.items[entry.first_attach]
+            try connect(job, model, &attach)
+        else: try place(job, prototype, (i32)model, depth + 1)
+
+## geocore's rotation (R = Rx(a) Ry(b) Rz(c), radians) as FBX's XYZ Euler
+## angles in degrees (R = Rz Ry Rx).
+func fbx_euler(angles: Vector3) -> Vector3:
+    let m = Matrix4.compose(Vector3(), angles, Vector3(1.0, 1.0, 1.0))
+    let c0 = m.x
+    let c1 = m.y
+    let c2 = m.z
+    let s = math.max(-1.0, math.min(1.0, -c0.z))
+    let b = math.asin(s)
+    var a: f64 = 0.0
+    var c: f64 = 0.0
+    if math.abs(s) < 0.9999999:
+        a = math.atan2(c1.z, c2.z)
+        c = math.atan2(c0.y, c0.x)
+    else:
+        a = math.atan2(s * c1.x, c1.y)
+    let degrees = 180.0 / math.pi
+    return Vector3(a * degrees, b * degrees, c * degrees)
+
+## Every model as a Model object.
+func write_models(job: Export*) -> !:
+    let tree = &job.tree
+    for index in 0..<job.models.count:
+        let model = job.models.items[index]
+        try tree.begin("Model")
+        try tree.int64(model.id)
+        try tree.object_name(job.model_name(index), "Model")
+        try tree.string(model_classes[(usize)model.kind])
+        try tree.leaf_int32("Version", 232)
+        try tree.begin("Properties70")
+        try tree.p_bool("RotationActive", true)
+        try tree.p_enum("InheritType", 1)
+        try tree.p_vector("ScalingMax", "Vector3D", "Vector", "", Vector3())
+        if model.kind != 0: try tree.p_int("DefaultAttributeIndex", 0)
+        if model.translation.x != 0.0 or model.translation.y != 0.0 or model.translation.z != 0.0:
+            try tree.p_vector("Lcl Translation", "Lcl Translation", "", "A", model.translation)
+        if model.rotation.x != 0.0 or model.rotation.y != 0.0 or model.rotation.z != 0.0:
+            try tree.p_vector("Lcl Rotation", "Lcl Rotation", "", "A", model.rotation)
+        if model.scale.x != 1.0 or model.scale.y != 1.0 or model.scale.z != 1.0:
+            try tree.p_vector("Lcl Scaling", "Lcl Scaling", "", "A", model.scale)
+        if not model.visible:
+            try tree.p("Visibility", "Visibility", "", "A")
+            try tree.real64(0.0)
+            tree.end()
+        tree.end()
+        try tree.leaf_int32("MultiLayer", 0)
+        try tree.leaf_int32("MultiTake", 0)
+        try tree.begin("Shading")
+        try tree.flag(1)
+        tree.end()
+        try tree.leaf_string("Culling", "CullingOff")
+        tree.end()
+        let parent = 0 if model.parent < 0 else job.models.items[(usize)model.parent].id
+        try job.link(model.id, parent)
+
+let model_classes: str[3] = ["Null", "Mesh", "NurbsCurve"]
+
+## The file's axes, units and frame rate: the set's fbx.* details (as a load
+## records them), else Y-up, +Z front, meters, 24 fps.
+struct SceneSettings:
+    var up: (i32, i32)
+    var front: (i32, i32)
+    var coord: (i32, i32)
+    var meters: f64
+    var frame_rate: f64
+
+func scene_settings(set: const GeometrySet*) -> SceneSettings:
+    let detail = set_detail(set)
+    var settings = SceneSettings(up = (1, 1), front = (2, 1), coord = (0, 1), meters = 1.0, frame_rate = 24.0)
+    let up = axis_detail(detail, "fbx.upAxis") else (1, 1)
+    let front = axis_detail(detail, "fbx.frontAxis") else (2, 1)
+    if up.0 != front.0:
+        settings.up = up
+        settings.front = front
+        # Right-handed: the coordinate axis is up x front.
+        let coord = 3 - up.0 - front.0
+        let cyclic = (coord + 1) % 3 == up.0
+        settings.coord = (coord, up.1 * front.1 * (1 if cyclic else -1))
+    let meters = detail.find("fbx.metersPerUnit", (i64)(u8)Domain.detail)
+    if meters >= 0:
+        let value = detail.entry((usize)meters).number(0, 0)
+        if value > 0.0 and math.is_finite(value): settings.meters = value
+    let rate = detail.find("fbx.frameRate", (i64)(u8)Domain.detail)
+    if rate >= 0:
+        let value = detail.entry((usize)rate).number(0, 0)
+        if value > 0.0 and math.is_finite(value): settings.frame_rate = value
+    return settings
+
+## A "+Y"-style axis detail as (index, sign).
+func axis_detail(detail: const AttributeStore*, name: str) -> (i32, i32)?:
+    let found = detail.find(name, (i64)(u8)Domain.detail)
+    if found < 0: return none
+    let entry = detail.entry((usize)found)
+    if entry.kind != DataType.text: return none
+    let text = entry.text_at(0)
+    if text.length != 2 or (text.bytes[0] != '+' and text.bytes[0] != '-'): return none
+    let index: i32 = 0 if text.bytes[1] == 'X' else (1 if text.bytes[1] == 'Y' else (2 if text.bytes[1] == 'Z' else -1))
+    if index < 0: return none
+    let sign: i32 = 1 if text.bytes[0] == '+' else -1
+    return (index, sign)
+
+## TimeModes by frame rate (FbxTime::EMode); others are custom (14).
+let time_rates: f64[14] = [24.0, 25.0, 30.0, 48.0, 50.0, 60.0, 100.0, 120.0, 1000.0, 96.0, 72.0, 59.94, 29.97, 23.976]
+let time_modes: i32[14] = [11, 10, 6, 5, 4, 3, 2, 1, 12, 15, 16, 17, 9, 13]
+
+func time_mode(rate: f64) -> i32:
+    for at in 0..<time_rates.length:
+        if math.abs(time_rates[at] - rate) < 1.0e-3: return time_modes[at]
+    return 14
+
+## The top-level nodes before Objects. The FBXVersion property's index is
+## returned so the encoder can set the version it writes.
+func write_header(tree: Tree*, set: const GeometrySet*, version: u32) -> usize!:
+    try tree.begin("FBXHeaderExtension")
+    try tree.leaf_int32("FBXHeaderVersion", 1003)
+    try tree.begin("FBXVersion")
+    let version_prop = tree.props.count
+    try tree.int32((i32)version)
+    tree.end()
+    try tree.leaf_int32("EncryptionType", 0)
+    try tree.begin("CreationTimeStamp")
+    try tree.leaf_int32("Version", 1000)
+    try tree.leaf_int32("Year", 1970)
+    try tree.leaf_int32("Month", 1)
+    try tree.leaf_int32("Day", 1)
+    try tree.leaf_int32("Hour", 10)
+    try tree.leaf_int32("Minute", 0)
+    try tree.leaf_int32("Second", 0)
+    try tree.leaf_int32("Millisecond", 0)
+    tree.end()
+    try tree.leaf_string("Creator", creator)
+    tree.end()
+    try tree.begin("FileId")
+    try tree.raw(file_id)
+    tree.end()
+    try tree.leaf_string("CreationTime", creation_time)
+    try tree.leaf_string("Creator", creator)
+    let settings = scene_settings(set)
+    try tree.begin("GlobalSettings")
+    try tree.leaf_int32("Version", 1000)
+    try tree.begin("Properties70")
+    try tree.p_int("UpAxis", settings.up.0)
+    try tree.p_int("UpAxisSign", settings.up.1)
+    try tree.p_int("FrontAxis", settings.front.0)
+    try tree.p_int("FrontAxisSign", settings.front.1)
+    try tree.p_int("CoordAxis", settings.coord.0)
+    try tree.p_int("CoordAxisSign", settings.coord.1)
+    try tree.p_int("OriginalUpAxis", settings.up.0)
+    try tree.p_int("OriginalUpAxisSign", settings.up.1)
+    try tree.p_double("UnitScaleFactor", settings.meters * 100.0)
+    try tree.p_double("OriginalUnitScaleFactor", settings.meters * 100.0)
+    try tree.p_color("AmbientColor", Vector3())
+    try tree.p_string("DefaultCamera", "Producer Perspective")
+    try tree.p_enum("TimeMode", time_mode(settings.frame_rate))
+    try tree.p_time("TimeSpanStart", 0)
+    try tree.p_time("TimeSpanStop", 46186158000)
+    try tree.p_double("CustomFrameRate", settings.frame_rate)
+    tree.end()
+    tree.end()
+    try tree.begin("Documents")
+    try tree.leaf_int32("Count", 1)
+    try tree.begin("Document")
+    try tree.int64(1000000)
+    try tree.string("Scene")
+    try tree.string("Scene")
+    try tree.begin("Properties70")
+    try tree.p("SourceObject", "object", "", "")
+    tree.end()
+    try tree.p_string("ActiveAnimStackName", "")
+    tree.end()
+    try tree.leaf_int64("RootNode", 0)
+    tree.end()
+    tree.end()
+    try tree.leaf("References")
+    return version_prop
+
+let creator: str = "luce-fbx"
+
+## Definitions: each object type's count.
+func write_definitions(job: Export*) -> !:
+    let tree = &job.tree
+    let models = job.models.count
+    let geometries = job.geometry_count
+    let materials = job.materials.count
+    try tree.begin("Definitions")
+    try tree.leaf_int32("Version", 100)
+    try tree.leaf_int32("Count", (i32)(1 + models + geometries + materials))
+    let names: str[4] = ["GlobalSettings", "Model", "Geometry", "Material"]
+    let counts: usize[4] = [1, models, geometries, materials]
+    for at in 0..<(usize)4:
+        if counts[at] == 0: continue
+        try tree.begin("ObjectType")
+        try tree.string(names[at])
+        try tree.leaf_int32("Count", (i32)counts[at])
+        tree.end()
+    tree.end()
+
+## `set` as an FBX file's bytes on memory.heap; the caller frees them.
+pub func encode_set(set: const GeometrySet*, options: const ExportOptions*, warnings: Warnings*) -> u8[]!:
+    var job = Export(warnings)
+    defer job.close()
+    let tree = &job.tree
+    let version_prop = try write_header(tree, set, 7400 if options.version == 0 else options.version)
+    let objects = (u32)tree.nodes.count
+    try tree.begin("Objects")
+    try place(&job, try prepare(&job, set), -1, 0)
+    try job.write_materials()
+    try write_models(&job)
+    tree.end()
+    let definitions = (u32)tree.nodes.count
+    try write_definitions(&job)
+    tree.root_before(definitions, objects)
+    try tree.begin("Connections")
+    for link in job.links.view():
+        try tree.begin("C")
+        try tree.string("OO")
+        try tree.int64(link.child)
+        try tree.int64(link.parent)
+        tree.end()
+    tree.end()
+    try tree.begin("Takes")
+    try tree.leaf_string("Current", "")
+    tree.end()
+    return try encode_tree(tree, options.version, options.deflate, version_prop)

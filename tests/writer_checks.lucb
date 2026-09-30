@@ -1,0 +1,185 @@
+## The writer (docs/MAPPING.md, "Writing"): sets saved and read back keep
+## their meshes (points bit for bit), layers, materials, paths, curves,
+## instance rows and settings; 7500 and raw arrays read the same.
+import memory
+import math
+from fbx_kernel import Document, ImportOptions, Warnings, import_document, read_file, ExportOptions, encode_set, invalid
+from geocore import Mesh, Vector3, Matrix4
+from geocore_kernel import GeometrySet, Attribute, Domain, DataType, Instances, Curves, set_mesh, set_find, set_detail, instances_component, curves_type, dispose_set, attribute_entry, corner_span, offset_span, corner_edge_span
+
+## A set read from bytes.
+func read_set(data: const u8[], options: ImportOptions) -> GeometrySet*!:
+    var document = try Document.parse(data)
+    defer document.close()
+    var warnings = Warnings()
+    defer warnings.close()
+    return try import_document(&document, &options, &warnings)
+
+## `path` imported with `options`, as the set and its saved bytes (the
+## caller frees both).
+func saved(path: str, options: ImportOptions, saving: ExportOptions) -> (GeometrySet*, u8[])!:
+    let data = try read_file(path)
+    defer free(data) in memory.heap
+    let set = try read_set(data, options)
+    errdefer dispose_set(set)
+    var notes = Warnings()
+    defer notes.close()
+    return (set, try encode_set(set, &saving, &notes))
+
+func mesh_of(set: const GeometrySet*) -> const Mesh*!:
+    return set_mesh(set) else error(invalid, "no mesh")
+
+func attribute_of(mesh: const Mesh*, name: str, domain: Domain) -> const Attribute*!:
+    let index = mesh.find_attribute(name, (i64)(u8)domain)
+    if index < 0:
+        print(f"writer: no attribute {name}")
+        error(invalid, "a missing attribute")
+    return try attribute_entry(mesh, index)
+
+## Two meshes the same: counts, every corner's point bit for bit (points
+## may be numbered anew), and each named attribute's values, compared
+## through the corners so point and edge numbering need not match.
+func same_meshes(a: const Mesh*, b: const Mesh*, names: const str[]) -> !:
+    assert(a.face_count() == b.face_count())
+    let ca = corner_span(a)
+    let cb = corner_span(b)
+    assert(ca.length == cb.length)
+    let oa = offset_span(a)
+    let ob = offset_span(b)
+    for face in 0..<oa.length: assert(oa[face] == ob[face])
+    for corner in 0..<ca.length:
+        let p = try a.point((i64)ca[corner])
+        let q = try b.point((i64)cb[corner])
+        if not (p.x == q.x and p.y == q.y and p.z == q.z): print(f"writer: corner {corner}: {p.x} {p.y} {p.z} against {q.x} {q.y} {q.z}")
+        assert(p.x == q.x and p.y == q.y and p.z == q.z)
+    let ea = try corner_edge_span(a)
+    let eb = try corner_edge_span(b)
+    for name in names:
+        for domain in [Domain.point, Domain.corner, Domain.face, Domain.edge]:
+            let left = a.find_attribute(name, (i64)(u8)domain)
+            if left < 0: continue
+            let x = try attribute_entry(a, left)
+            let y = try attribute_of(b, name, domain)
+            for corner in 0..<ca.length:
+                var ex = corner
+                var ey = corner
+                match domain:
+                    .point:
+                        ex = (usize)ca[corner]
+                        ey = (usize)cb[corner]
+                    .face:
+                        ex = face_of(oa, corner)
+                        ey = ex
+                    .edge:
+                        ex = (usize)ea[corner]
+                        ey = (usize)eb[corner]
+                    _: discard(0)
+                for k in 0..<x.width:
+                    if x.kind == DataType.text: assert(x.text_at(ex) == y.text_at(ey))
+                    elif math.abs(x.number(ex, k) - y.number(ey, k)) > 1.0e-6:
+                        print(f"writer: {name} at corner {corner} differs")
+                        assert(false)
+
+## The face corner `corner` is in.
+func face_of(offsets: const i32[], corner: usize) -> usize:
+    var low: usize = 0
+    var high = offsets.length - 1
+    while low + 1 < high:
+        let middle = (low + high) // 2
+        if (usize)offsets[middle] <= corner: low = middle
+        else: high = middle
+    return low
+
+## Save `path` merged and read it back: the same mesh and attributes.
+func mesh_trip(path: str, names: const str[]) -> !:
+    let options = ImportOptions(instancing = false)
+    let (set, data) = try saved(path, options, ExportOptions())
+    defer dispose_set(set)
+    defer free(data) in memory.heap
+    let again = try read_set(data, options)
+    defer dispose_set(again)
+    try same_meshes(try mesh_of(set), try mesh_of(again), names)
+
+## Blender's cube: points, faces, normals, material and path; the details
+## keep Y-up meters.
+pub func default_cube() -> !:
+    try mesh_trip("tests/fixtures/blender_279_default_7400_binary.fbx", ["N", "material", "path"])
+
+## Color sets, smoothing, creases, edge visibility, and a Z-up centimeter
+## file's settings.
+pub func layers() -> !:
+    try mesh_trip("tests/fixtures/blender_279_color_sets_7400_binary.fbx", ["Cd", "Alpha", "Cd2", "Alpha2", "Cd3", "Alpha3", "path"])
+    try mesh_trip("tests/fixtures/maya_cube_7500_ascii.fbx", ["sharp", "N", "uv"])
+    try mesh_trip("tests/fixtures/blender_293x_subsurf_max_crease_7400_binary.fbx", ["crease"])
+    try mesh_trip("tests/fixtures/max_edge_visibility_7500_binary.fbx", ["hidden"])
+    let (set, data) = try saved("tests/fixtures/max_edge_visibility_7500_binary.fbx", ImportOptions(), ExportOptions())
+    defer dispose_set(set)
+    defer free(data) in memory.heap
+    let again = try read_set(data, ImportOptions())
+    defer dispose_set(again)
+    for name in ["fbx.upAxis", "fbx.frontAxis"]:
+        let a = set_detail(set).entry((usize)set_detail(set).find(name, 3))
+        let b = set_detail(again).entry((usize)set_detail(again).find(name, 3))
+        assert(a.text_at(0) == b.text_at(0))
+    let meters = set_detail(again).entry((usize)set_detail(again).find("fbx.metersPerUnit", 3)).number(0, 0)
+    assert(math.abs(meters - 0.0254) < 1.0e-9)
+
+## Line and NURBS curves keep their points (and weights).
+pub func curves() -> !:
+    for path in ["tests/fixtures/max_curve_line_7500_ascii.fbx", "tests/fixtures/max_nurbs_curve_rational_7500_ascii.fbx"]:
+        let (set, data) = try saved(path, ImportOptions(), ExportOptions())
+        defer dispose_set(set)
+        defer free(data) in memory.heap
+        let again = try read_set(data, ImportOptions())
+        defer dispose_set(again)
+        let a = (const Curves*)(set_find(set, curves_type()) else error(invalid, "no curves"))
+        let b = (const Curves*)(set_find(again, curves_type()) else error(invalid, "no curves"))
+        assert(a.curve_count() == b.curve_count() and a.point_count() == b.point_count())
+        for point in 0..<a.point_count():
+            let p = a.point(point)
+            let q = b.point(point)
+            assert(math.abs(p.x - q.x) + math.abs(p.y - q.y) + math.abs(p.z - q.z) < 1.0e-5)
+        if let weights = a.find("w", Domain.point):
+            let other = b.find("w", Domain.point) else error(invalid, "no weights")
+            for point in 0..<a.point_count(): assert(math.abs(weights.number(point, 0) - other.number(point, 0)) < 1.0e-6)
+
+## Eight rows sharing a Suzanne: one Geometry, eight models, each row's
+## matrix as it was; merged, the same 4000 faces.
+pub func instances() -> !:
+    let (set, data) = try saved("tests/fixtures/blender_293_instancing_7400_binary.fbx", ImportOptions(), ExportOptions())
+    defer dispose_set(set)
+    defer free(data) in memory.heap
+    let again = try read_set(data, ImportOptions())
+    defer dispose_set(again)
+    let a = (const Instances*)(set_find(set, instances_component()) else error(invalid, "no instances"))
+    let b = (const Instances*)(set_find(again, instances_component()) else error(invalid, "no instances"))
+    assert(b.count() == 8 and b.prototype_count() == 1)
+    for row in 0..<a.count():
+        let x = a.item(row).matrix()
+        let y = b.item(row).matrix()
+        for pair in [(x.x, y.x), (x.y, y.y), (x.z, y.z), (x.translation, y.translation)]:
+            assert(pair.0.subtract(pair.1).length() < 1.0e-5)
+    let merged = try read_set(data, ImportOptions(instancing = false))
+    defer dispose_set(merged)
+    assert((try mesh_of(merged)).face_count() == 4000)
+
+## 7500 records and raw arrays read as 7400 and deflated ones do.
+pub func encodings() -> !:
+    let options = ImportOptions(instancing = false)
+    let (set, wide) = try saved("tests/fixtures/blender_279_color_sets_7400_binary.fbx", options, ExportOptions(version = 7500, deflate = false))
+    defer dispose_set(set)
+    defer free(wide) in memory.heap
+    var document = try Document.parse(wide)
+    defer document.close()
+    assert(document.version == 7500)
+    let again = try read_set(wide, options)
+    defer dispose_set(again)
+    try same_meshes(try mesh_of(set), try mesh_of(again), ["Cd", "Alpha", "N"])
+
+## Every check above, for allocation-failure injection.
+pub func all() -> !:
+    try default_cube()
+    try layers()
+    try curves()
+    try instances()
+    try encodings()

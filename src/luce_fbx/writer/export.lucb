@@ -1,0 +1,208 @@
+## A GeometrySet as an FBX scene (docs/MAPPING.md, "Writing"): the export
+## state every other fragment adds to. Each set is first *prepared*: its
+## meshes and curves become Geometry objects (and their Materials), once
+## per set however often it is instanced, each remembered as an attachment
+## at its `path`. Then it is *placed* under a parent model: every path
+## becomes a Model (missing ancestors Null models) connected to its
+## attachments' geometry and materials, and every instance row a Model
+## with its Lcl Translation, Rotation and Scaling holding its prototype,
+## placed the same way. Geometry shared by several rows is FBX's own
+## instancing, as Blender and ufbx read it.
+
+## What a save does.
+pub struct ExportOptions:
+    ## 7400, or 7500 (64-bit records); 0 writes 7400 unless the file needs
+    ## 7500's offsets.
+    pub var version: u32 = 0
+    ## Deflate arrays over 128 bytes (Blender's rule); off writes them raw.
+    pub var deflate: bool = true
+
+## An OO connection: `child` to `parent` (0, the scene root).
+struct Link:
+    var child: i64
+    var parent: i64
+
+## One Model of the scene.
+struct ModelOut:
+    var id: i64
+    ## Its parent model's index, -1 for the scene root.
+    var parent: i32
+    var name_start: usize
+    var name_length: usize
+    ## 0 Null, 1 Mesh, 2 a curve (NurbsCurve or Line).
+    var kind: u8
+    var translation: Vector3
+    ## FBX's XYZ Euler angles in degrees (R = Rz Ry Rx).
+    var rotation: Vector3
+    var scale: Vector3
+    var visible: bool
+    ## Found by (parent, name); instance rows are not.
+    var named: bool
+
+## A mesh part or a path's curves written as Geometry, to connect to the
+## model at `path` (a set's own text; empty: the component's fallback).
+struct Attach:
+    var path_start: usize
+    var path_length: usize
+    var fallback: str
+    var geometry: i64
+    var kind: u8
+    ## Its materials (ids in `Export.material_refs`), in its layer's order.
+    var first_material: usize
+    var material_count: usize
+
+## A set already prepared: its attachments and its instances.
+struct Prepared:
+    var set: const GeometrySet*
+    var first_attach: usize
+    var attach_count: usize
+    var instances: const Instances*?
+
+## Instances nest at most this deep.
+let most_depth: usize = 16
+
+pub struct Export:
+    var tree: Tree
+    var warnings: Warnings*
+    var next_id: i64
+    var links: Growing[Link]
+    var models: Growing[ModelOut]
+    ## Model names, attachment paths.
+    var names: Growing[u8]
+    ## Models by (parent, name): open addressing, -1 empty.
+    var lookup: Growing[i32]
+    var attaches: Growing[Attach]
+    var prepared: Growing[Prepared]
+    var material_refs: Growing[i64]
+    ## Materials by name: (name span, id).
+    var material_names: Growing[u8]
+    var materials: Growing[(usize, usize, i64)]
+    var geometry_count: usize
+
+    pub func init(warnings: Warnings*):
+        self.tree = Tree()
+        self.warnings = warnings
+        self.next_id = 1000000
+        self.links = Growing[Link]()
+        self.models = Growing[ModelOut]()
+        self.names = Growing[u8]()
+        self.lookup = Growing[i32]()
+        self.attaches = Growing[Attach]()
+        self.prepared = Growing[Prepared]()
+        self.material_refs = Growing[i64]()
+        self.material_names = Growing[u8]()
+        self.materials = Growing[(usize, usize, i64)]()
+        self.geometry_count = 0
+
+    pub mutating func close():
+        self.tree.close()
+        self.links.close()
+        self.models.close()
+        self.names.close()
+        self.lookup.close()
+        self.attaches.close()
+        self.prepared.close()
+        self.material_refs.close()
+        self.material_names.close()
+        self.materials.close()
+
+    mutating func new_id() -> i64:
+        self.next_id += 1
+        return self.next_id
+
+    mutating func link(child: i64, parent: i64) -> !:
+        try self.links.push(Link(child = child, parent = parent))
+
+    func model_name(index: usize) -> str:
+        let model = &self.models.items[index]
+        return (str)self.names.items[model.name_start..<model.name_start + model.name_length]
+
+    ## The id of material `name` (written with the models, write_objects).
+    mutating func material(name: str) -> i64!:
+        for entry in self.materials.view():
+            if (str)self.material_names.items[entry.0..<entry.0 + entry.1] == name: return entry.2
+        let id = self.new_id()
+        let start = self.material_names.count
+        for byte in name.bytes: try self.material_names.push(byte)
+        try self.materials.push((start, name.length, id))
+        return id
+
+    ## Every material as a Material object: its name and a grey diffuse.
+    mutating func write_materials() -> !:
+        let tree = &self.tree
+        for entry in self.materials.view():
+            try tree.begin("Material")
+            try tree.int64(entry.2)
+            try tree.object_name((str)self.material_names.items[entry.0..<entry.0 + entry.1], "Material")
+            try tree.string("")
+            try tree.leaf_int32("Version", 102)
+            try tree.leaf_string("ShadingModel", "Phong")
+            try tree.leaf_int32("MultiLayer", 0)
+            try tree.begin("Properties70")
+            try tree.p_vector("DiffuseColor", "Color", "", "A", Vector3(0.8, 0.8, 0.8))
+            tree.end()
+            tree.end()
+
+    # -- Models by path.
+
+    ## The child of `parent` named `name`, made (a Null) when missing.
+    mutating func child_model(parent: i32, name: str) -> usize!:
+        if self.lookup.count < self.models.count * 2 + 16: try self.rehash()
+        let mask = self.lookup.count - 1
+        var slot = name_hash(parent, name) & mask
+        while self.lookup.items[slot] >= 0:
+            let found = (usize)self.lookup.items[slot]
+            if self.models.items[found].parent == parent and self.model_name(found) == name: return found
+            slot = (slot + 1) & mask
+        let index = try self.add_model(parent, name, 0)
+        self.models.items[index].named = true
+        self.lookup.items[slot] = (i32)index
+        return index
+
+    ## A new model (not looked up by name: instance rows).
+    mutating func add_model(parent: i32, name: str, kind: u8) -> usize!:
+        let start = self.names.count
+        for byte in name.bytes: try self.names.push(byte)
+        try self.models.push(ModelOut(id = self.new_id(), parent = parent, name_start = start, name_length = name.length, kind = kind, translation = Vector3(), rotation = Vector3(), scale = Vector3(1.0, 1.0, 1.0), visible = true, named = false))
+        return self.models.count - 1
+
+    mutating func rehash() -> !:
+        var size: usize = 64
+        while size < self.models.count * 4 + 32: size *= 2
+        try self.lookup.fill(size, -1)
+        let mask = size - 1
+        for index in 0..<self.models.count:
+            let model = &self.models.items[index]
+            if not model.named: continue
+            var slot = name_hash(model.parent, self.model_name(index)) & mask
+            while self.lookup.items[slot] >= 0: slot = (slot + 1) & mask
+            self.lookup.items[slot] = (i32)index
+
+    ## The model at `path` ("/A/B", names split at '/') under `parent`,
+    ## `fallback` for a path with no names.
+    mutating func model_at(parent: i32, path: str, fallback: str) -> usize!:
+        var at = parent
+        var start: usize = 0
+        var named = false
+        while start <= path.length:
+            var end = start
+            while end < path.length and path.bytes[end] != '/': end += 1
+            if end > start:
+                at = (i32)try self.child_model(at, (str)path.bytes[start..<end])
+                named = true
+            start = end + 1
+        if not named: at = (i32)try self.child_model(parent, fallback)
+        return (usize)at
+
+func name_hash(parent: i32, name: str) -> usize:
+    var mixed: u64 = 1469598103934665603 ^ (u64)(u32)parent
+    for byte in name.bytes: mixed = (mixed ^ (u64)byte) *% 1099511628211
+    return (usize)(mixed ^ (mixed >> 29))
+
+## The last name of a path ("B" of "/A/B"), or `fallback`.
+func leaf_name(path: str, fallback: str) -> str:
+    var end = path.length
+    while end > 0 and path.bytes[end - 1] == '/': end -= 1
+    var start = end
+    while start > 0 and path.bytes[start - 1] != '/': start -= 1
+    return (str)path.bytes[start..<end] if end > start else fallback
