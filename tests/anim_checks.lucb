@@ -7,7 +7,7 @@ import memory
 import math
 from fbx_kernel import Document, Scene, Animation, ImportOptions, Warnings, import_document, read_file, invalid
 from geocore import Mesh, Vector3
-from geocore_kernel import GeometrySet, set_mesh, dispose_set, point_span, mesh_origin
+from geocore_kernel import GeometrySet, set_mesh, dispose_set
 
 struct Case:
     let path: str
@@ -57,9 +57,9 @@ pub func animated() -> !:
         let set = try import_document(&document, &options, &warnings)
         defer dispose_set(set)
         let mesh = set_mesh(set) else error(invalid, "no mesh")
-        let origin = mesh_origin(mesh)
+        let origin = mesh.position_origin()
         var sum: f64[3] = [0.0, 0.0, 0.0]
-        for p in point_span(mesh):
+        for p in mesh.point_span():
             sum[0] += (f64)p.x + origin.x
             sum[1] += (f64)p.y + origin.y
             sum[2] += (f64)p.z + origin.z

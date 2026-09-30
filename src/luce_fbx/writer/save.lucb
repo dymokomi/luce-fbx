@@ -8,8 +8,8 @@ func prepare(job: Export*, set: const GeometrySet*) -> usize!:
         if job.prepared.items[at].set == set: return at
     let first = job.attaches.count
     var instances: const Instances*? = none
-    for index in 0..<set_component_count(set):
-        let component = set_component(set, index)
+    for index in 0..<set.component_count():
+        let component = set.component(index)
         let kind = component.kind
         if kind == mesh_component(): try prepare_mesh(job, (const Mesh*)component.data)
         elif kind == curves_type(): try prepare_curves(job, (const Curves*)component.data)

@@ -6,7 +6,7 @@ import memory
 import math
 from fbx_kernel import Document, ImportOptions, Warnings, import_document, read_file, invalid
 from geocore import Mesh
-from geocore_kernel import GeometrySet, Attribute, Domain, DataType, Instances, Curves, set_mesh, set_find, set_detail, instances_component, curves_type, dispose_set, attribute_entry, popcount
+from geocore_kernel import GeometrySet, Attribute, Domain, DataType, Instances, Curves, set_mesh, set_detail, instances_component, curves_type, dispose_set, popcount
 
 ## Import `path` with `options`; the caller disposes of the set.
 func imported(path: str, options: ImportOptions) -> GeometrySet*!:
@@ -25,7 +25,7 @@ func mesh_of(set: const GeometrySet*) -> const Mesh*!:
 func attribute_of(mesh: const Mesh*, name: str, domain: Domain) -> const Attribute*!:
     let index = mesh.find_attribute(name, (i64)(u8)domain)
     if index < 0: error(invalid, "a missing attribute")
-    return try attribute_entry(mesh, index)
+    return try mesh.attribute_entry(index)
 
 ## Component `component` of every element of `attribute`, summed.
 func total(attribute: const Attribute*, component: usize) -> f64:
@@ -73,7 +73,7 @@ pub func instancing() -> !:
     let path = "tests/fixtures/blender_293_instancing_7400_binary.fbx"
     let shared = try imported(path, ImportOptions())
     defer dispose_set(shared)
-    let rows = (const Instances*)(set_find(shared, instances_component()) else error(invalid, "no instances"))
+    let rows = (const Instances*)(shared.find(instances_component()) else error(invalid, "no instances"))
     assert(rows.count() == 8 and rows.prototype_count() == 1)
     assert(set_mesh(shared) == none)
     let merged = try imported(path, ImportOptions(instancing = false))
@@ -81,7 +81,7 @@ pub func instancing() -> !:
     assert((try mesh_of(merged)).face_count() == 8 * 500)
     let kept = try imported(path, ImportOptions(keep_hierarchy = true, instancing = false))
     defer dispose_set(kept)
-    let kept_rows = (const Instances*)(set_find(kept, instances_component()) else error(invalid, "no instances"))
+    let kept_rows = (const Instances*)(kept.find(instances_component()) else error(invalid, "no instances"))
     assert(kept_rows.count() == 8 and kept_rows.prototype_count() == 8)
 
 ## Three color sets as Cd/Alpha, Cd2/Alpha2, Cd3/Alpha3 (ufbx's sums).
@@ -120,11 +120,11 @@ pub func edge_layers() -> !:
 pub func curves() -> !:
     let lines = try imported("tests/fixtures/max_curve_line_7500_ascii.fbx", ImportOptions())
     defer dispose_set(lines)
-    let poly = (const Curves*)(set_find(lines, curves_type()) else error(invalid, "no curves"))
+    let poly = (const Curves*)(lines.find(curves_type()) else error(invalid, "no curves"))
     assert(poly.point_count() == 22)
     let rational = try imported("tests/fixtures/max_nurbs_curve_rational_7500_ascii.fbx", ImportOptions())
     defer dispose_set(rational)
-    let nurbs = (const Curves*)(set_find(rational, curves_type()) else error(invalid, "no curves"))
+    let nurbs = (const Curves*)(rational.find(curves_type()) else error(invalid, "no curves"))
     assert(nurbs.point_count() == 7 and nurbs.curve_count() == 1)
     let store = nurbs.store()
     let weights = store.find("w", 0)

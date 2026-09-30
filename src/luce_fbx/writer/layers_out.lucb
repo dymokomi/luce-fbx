@@ -59,7 +59,7 @@ func written(entry: const Attribute*) -> bool:
 ## A warning for each attribute FBX has no layer for.
 func note_left_out(job: Export*, mesh: const Mesh*) -> !:
     for index in 0..<(usize)mesh.attribute_count():
-        let entry = try attribute_entry(mesh, (i64)index)
+        let entry = try mesh.attribute_entry((i64)index)
         if written(entry): continue
         var line: u8[256] = ---
         try job.warnings.add(try format(line, f"FBX has no layer for the mesh attribute {entry.name()}; it was left out"))
@@ -175,7 +175,7 @@ func color_out(tree: Tree*, layers: LayerList*, mesh: const Mesh*, part: const M
     var alpha: const Attribute*? = none
     var alpha_name: u8[16] = ---
     let found = mesh.find_attribute(try format(alpha_name, f"Alpha{set + 1}") if set > 0 else "Alpha", (i64)(u8)entry.domain)
-    if found >= 0: alpha = try attribute_entry(mesh, found)
+    if found >= 0: alpha = try mesh.attribute_entry(found)
     let raw = try alloc u8[count * 16] in memory.heap
     let out = f32[]((f32*)raw.data, count * 4)
     for at in 0..<count:
@@ -212,7 +212,7 @@ func write_layers(job: Export*, mesh: const Mesh*, part: const MeshPart*, layers
     var smoothing: const Attribute*? = none
     var sharp: const Attribute*? = none
     for index in 0..<(usize)mesh.attribute_count():
-        let entry = try attribute_entry(mesh, (i64)index)
+        let entry = try mesh.attribute_entry((i64)index)
         if not written(entry): continue
         let name = entry.name()
         if set_of(name, "N") >= 0:
@@ -258,7 +258,7 @@ func write_layers(job: Export*, mesh: const Mesh*, part: const MeshPart*, layers
 func write_materials(job: Export*, mesh: const Mesh*, part: const MeshPart*, layers: LayerList*) -> !:
     let found = mesh.find_attribute("material", (i64)(u8)Domain.face)
     if found < 0: return
-    let entry = try attribute_entry(mesh, found)
+    let entry = try mesh.attribute_entry(found)
     if entry.kind != DataType.text: return
     var local_of = Growing[i32]()
     defer local_of.close()

@@ -16,7 +16,7 @@ from fbx_kernel import Document, Scene, Hierarchy, Kind, Animation, ImportOption
 import math
 import strings
 from geocore import Matrix4, Vector3, Mesh
-from geocore_kernel import GeometrySet, Attribute, Domain, DataType, Float3, Curves, set_mesh, set_find, curves_type, dispose_set, point_span, mesh_origin, offset_span, corner_span, attribute_entry
+from geocore_kernel import GeometrySet, Attribute, Domain, DataType, Float3, Curves, set_mesh, curves_type, dispose_set
 from geocore_growing import Growing
 
 pub func main(arguments: str[]) -> i32!:
@@ -79,7 +79,7 @@ pub func main(arguments: str[]) -> i32!:
         return 1
     defer dispose_set(set)
     if let mesh = set_mesh(set): try dump_mesh(mesh)
-    if let found = set_find(set, curves_type()): try dump_curves((const Curves*)found)
+    if let found = set.find(curves_type()): try dump_curves((const Curves*)found)
     if save.length > 0:
         let saving = ImportOptions(keep_hierarchy = keep, instancing = instances, convert_units = false, normals = true, time = time, deform = not rest)
         let shared = import_document(&document, &saving, &warnings) catch failure:
@@ -129,11 +129,11 @@ func dump_curves(curves: const Curves*) -> !:
 func dump_mesh(mesh: const Mesh*) -> !:
     let path_index = mesh.find_attribute("path", 2)
     if path_index < 0: return
-    let paths = try attribute_entry(mesh, path_index)
-    let offsets = offset_span(mesh)
-    let corners = corner_span(mesh)
-    let points = point_span(mesh)
-    let origin = mesh_origin(mesh)
+    let paths = try mesh.attribute_entry(path_index)
+    let offsets = mesh.offset_span()
+    let corners = mesh.corner_span()
+    let points = mesh.point_span()
+    let origin = mesh.position_origin()
     let faces = offsets.length - 1
     # Faces of each path, in face order; paths in first-face order.
     var order = Growing[u32]()
@@ -190,7 +190,7 @@ func text_index(attribute: const Attribute*, element: usize) -> i32:
 func dump_attributes(mesh: const Mesh*, paths: const Attribute*, key: i32, path: str, offsets: const i32[], corners: const i32[]) -> !:
     let faces = offsets.length - 1
     for index in 0..<mesh.attribute_count():
-        let attribute = try attribute_entry(mesh, index)
+        let attribute = try mesh.attribute_entry(index)
         if attribute.kind != DataType.float32 or attribute.is_group(): continue
         let domain = attribute.domain
         if domain == Domain.edge or domain == Domain.detail: continue
@@ -221,7 +221,7 @@ func dump_attributes(mesh: const Mesh*, paths: const Attribute*, key: i32, path:
 func dump_materials(mesh: const Mesh*, paths: const Attribute*, key: i32, path: str) -> !:
     let index = mesh.find_attribute("material", 2)
     if index < 0: return
-    let materials = try attribute_entry(mesh, index)
+    let materials = try mesh.attribute_entry(index)
     let faces = materials.elements
     var names = Growing[i32]()
     defer names.close()

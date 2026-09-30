@@ -8,7 +8,7 @@
 ## An edge attribute (`crease`, x10) or an edge group (`sharp` where
 ## smoothing is 0, `hidden` where visibility is 0) from the edge layers.
 func put_edge_values(mesh: Mesh*, build: const MeshBuild*, geometries: const MeshGeometry[], plan: Planned, name: str, warnings: Warnings*) -> !:
-    let corner_edges = try corner_edge_span(mesh)
+    let corner_edges = try mesh.corner_edge_span()
     let edge_count = (usize)try mesh.edge_count()
     let group = name != "crease"
     var attribute = try Attribute.group(name, Domain.edge, edge_count) if group else try Attribute.create(name, Domain.edge, DataType.float32, 1, edge_count)

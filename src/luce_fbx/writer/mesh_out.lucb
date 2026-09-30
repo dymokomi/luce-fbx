@@ -68,7 +68,7 @@ func prepare_mesh(job: Export*, mesh: const Mesh*) -> !:
     var parts = Growing[MeshPart]()
     defer close_parts(&parts)
     let path_at = mesh.find_attribute("path", (i64)(u8)Domain.face)
-    let paths: const Attribute*? = (try attribute_entry(mesh, path_at)) if path_at >= 0 else none
+    let paths: const Attribute*? = (try mesh.attribute_entry(path_at)) if path_at >= 0 else none
     try split_parts(mesh, paths, &parts)
     let edges = needs_edges(mesh)
     let edge_total = (usize)try mesh.edge_count() if edges else 0
@@ -118,10 +118,10 @@ func split_parts(mesh: const Mesh*, paths: const Attribute*?, parts: Growing[Mes
 ## The part's points, corners and edges in first-use order; a part of
 ## the whole mesh keeps the mesh's own point order (unused points too).
 func number_part(mesh: const Mesh*, part: MeshPart*, id: i32, numbering: Numbering*, whole: bool, with_edges: bool) -> !:
-    let offsets = offset_span(mesh)
-    let corners = corner_span(mesh)
+    let offsets = mesh.offset_span()
+    let corners = mesh.corner_span()
     var none_yet: i32[]
-    let corner_edges = (try corner_edge_span(mesh)) if with_edges else none_yet
+    let corner_edges = (try mesh.corner_edge_span()) if with_edges else none_yet
     # Sized up front, then written in place: at most one entry per corner.
     var total: usize = 0
     for face in part.faces.view(): total += (usize)(offsets[(usize)face + 1] - offsets[(usize)face])
@@ -192,8 +192,8 @@ func write_geometry(job: Export*, mesh: const Mesh*, part: const MeshPart*, id: 
     try tree.string("Mesh")
     try tree.leaf_int32("GeometryVersion", 124)
     # Vertices, placed back at the mesh origin in f64.
-    let origin = mesh_origin(mesh)
-    let positions = point_span(mesh)
+    let origin = mesh.position_origin()
+    let positions = mesh.point_span()
     let points = part.points.count
     let vertices = try alloc u8[points * 24] in memory.heap
     var placing = VertexWork(positions = positions, points = part.points.view(), origin = origin, out = f64[]((f64*)vertices.data, points * 3))
@@ -202,7 +202,7 @@ func write_geometry(job: Export*, mesh: const Mesh*, part: const MeshPart*, id: 
     try tree.array('d', points * 3, vertices)
     tree.end()
     # Polygons: the face's last corner as ~index.
-    let offsets = offset_span(mesh)
+    let offsets = mesh.offset_span()
     let total = part.corners.count
     let indices = try alloc u8[total * 4] in memory.heap
     let out = i32[]((i32*)indices.data, total)

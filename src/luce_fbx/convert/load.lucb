@@ -87,9 +87,9 @@ pub func import_document(document: const Document*, options: const ImportOptions
     try decide_instances(&gathered, options)
     let set = try empty_set()
     errdefer dispose_set(set)
-    if let mesh = try merged_mesh(&gathered, options, warnings): try set_put(set, mesh_component(), (void*)mesh)
-    if let instances = try instance_rows(&gathered, options, warnings): try set_put(set, instances_component(), (void*)instances)
-    if let curves = try curves_of(gathered.curves.view(), &gathered.paths, warnings): try set_put(set, curves_type(), (void*)curves)
+    if let mesh = try merged_mesh(&gathered, options, warnings): try set.put(mesh_component(), (void*)mesh)
+    if let instances = try instance_rows(&gathered, options, warnings): try set.put(instances_component(), (void*)instances)
+    if let curves = try curves_of(gathered.curves.view(), &gathered.paths, warnings): try set.put(curves_type(), (void*)curves)
     try put_details(set, &scene, options, time)
     return set
 
@@ -236,7 +236,7 @@ func instance_rows(gathered: const Gathered*, options: const ImportOptions*, war
                 error(failure.code, failure.message)
             if let mesh = made_mesh:
                 # set_put closes the mesh when it fails.
-                set_put(set, mesh_component(), (void*)mesh) catch failure:
+                set.put(mesh_component(), (void*)mesh) catch failure:
                     dispose_set(set)
                     error(failure.code, failure.message)
             discard(try instances.add_prototype(set))

@@ -5,7 +5,7 @@ import memory
 import math
 from fbx_kernel import Document, ImportOptions, Warnings, import_document, read_file, ExportOptions, encode_set, invalid
 from geocore import Mesh, Vector3, Matrix4
-from geocore_kernel import GeometrySet, Attribute, Domain, DataType, Instances, Curves, set_mesh, set_find, set_detail, instances_component, curves_type, dispose_set, attribute_entry, corner_span, offset_span, corner_edge_span
+from geocore_kernel import GeometrySet, Attribute, Domain, DataType, Instances, Curves, set_mesh, set_detail, instances_component, curves_type, dispose_set
 
 ## A set read from bytes.
 func read_set(data: const u8[], options: ImportOptions) -> GeometrySet*!:
@@ -34,31 +34,31 @@ func attribute_of(mesh: const Mesh*, name: str, domain: Domain) -> const Attribu
     if index < 0:
         print(f"writer: no attribute {name}")
         error(invalid, "a missing attribute")
-    return try attribute_entry(mesh, index)
+    return try mesh.attribute_entry(index)
 
 ## Two meshes the same: counts, every corner's point bit for bit (points
 ## may be numbered anew), and each named attribute's values, compared
 ## through the corners so point and edge numbering need not match.
 func same_meshes(a: const Mesh*, b: const Mesh*, names: const str[]) -> !:
     assert(a.face_count() == b.face_count())
-    let ca = corner_span(a)
-    let cb = corner_span(b)
+    let ca = a.corner_span()
+    let cb = b.corner_span()
     assert(ca.length == cb.length)
-    let oa = offset_span(a)
-    let ob = offset_span(b)
+    let oa = a.offset_span()
+    let ob = b.offset_span()
     for face in 0..<oa.length: assert(oa[face] == ob[face])
     for corner in 0..<ca.length:
         let p = try a.point((i64)ca[corner])
         let q = try b.point((i64)cb[corner])
         if not (p.x == q.x and p.y == q.y and p.z == q.z): print(f"writer: corner {corner}: {p.x} {p.y} {p.z} against {q.x} {q.y} {q.z}")
         assert(p.x == q.x and p.y == q.y and p.z == q.z)
-    let ea = try corner_edge_span(a)
-    let eb = try corner_edge_span(b)
+    let ea = try a.corner_edge_span()
+    let eb = try b.corner_edge_span()
     for name in names:
         for domain in [Domain.point, Domain.corner, Domain.face, Domain.edge]:
             let left = a.find_attribute(name, (i64)(u8)domain)
             if left < 0: continue
-            let x = try attribute_entry(a, left)
+            let x = try a.attribute_entry(left)
             let y = try attribute_of(b, name, domain)
             for corner in 0..<ca.length:
                 var ex = corner
@@ -132,8 +132,8 @@ pub func curves() -> !:
         defer free(data) in memory.heap
         let again = try read_set(data, ImportOptions())
         defer dispose_set(again)
-        let a = (const Curves*)(set_find(set, curves_type()) else error(invalid, "no curves"))
-        let b = (const Curves*)(set_find(again, curves_type()) else error(invalid, "no curves"))
+        let a = (const Curves*)(set.find(curves_type()) else error(invalid, "no curves"))
+        let b = (const Curves*)(again.find(curves_type()) else error(invalid, "no curves"))
         assert(a.curve_count() == b.curve_count() and a.point_count() == b.point_count())
         for point in 0..<a.point_count():
             let p = a.point(point)
@@ -151,8 +151,8 @@ pub func instances() -> !:
     defer free(data) in memory.heap
     let again = try read_set(data, ImportOptions())
     defer dispose_set(again)
-    let a = (const Instances*)(set_find(set, instances_component()) else error(invalid, "no instances"))
-    let b = (const Instances*)(set_find(again, instances_component()) else error(invalid, "no instances"))
+    let a = (const Instances*)(set.find(instances_component()) else error(invalid, "no instances"))
+    let b = (const Instances*)(again.find(instances_component()) else error(invalid, "no instances"))
     assert(b.count() == 8 and b.prototype_count() == 1)
     for row in 0..<a.count():
         let x = a.item(row).matrix()
@@ -176,8 +176,8 @@ pub func hierarchy() -> !:
     defer free(data) in memory.heap
     let again = try read_set(data, options)
     defer dispose_set(again)
-    let a = (const Instances*)(set_find(set, instances_component()) else error(invalid, "no instances"))
-    let b = (const Instances*)(set_find(again, instances_component()) else error(invalid, "no instances"))
+    let a = (const Instances*)(set.find(instances_component()) else error(invalid, "no instances"))
+    let b = (const Instances*)(again.find(instances_component()) else error(invalid, "no instances"))
     assert(a.count() > 1 and b.count() >= a.count())
     for row in 0..<a.count():
         var found = false
