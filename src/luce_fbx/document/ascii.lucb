@@ -54,6 +54,8 @@ extend Document:
                 try parents.push(index)
         self.nodes.items[0].end = (u32)self.nodes.count
         self.version = try self.ascii_version()
+        if self.version < 6000: error(errors.unsupported, "ASCII FBX before version 6.0 is not supported")
+        if self.version >= 8000: error(errors.unsupported, "ASCII FBX 8 and later is not supported")
 
     ## The value list after `Name:`, up to (not including) a `{` or the
     ## next node.

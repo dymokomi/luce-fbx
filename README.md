@@ -1,24 +1,70 @@
 # luce-fbx
 
-An original **Luce Base** static polygon geometry reader. Public export:
-`fbx.Fbx.load(path)` and `fbx.Fbx.decode_ascii(text)` return a luce-geocore `Mesh`.
+FBX for Luce, in **Luce Base**: binary and ASCII FBX files read into
+luce-geocore `GeometrySet`s.
 
-The current contract is **raw mesh-local geometry**, not a reconstructed FBX
-scene. It reads positions and polygons from ASCII 7.x arrays and binary 7.x nodes,
-including the 7.5+ 64-bit node headers and zlib-compressed numeric arrays. Deflate
-uses `luce-compress`, itself Base code. Multiple geometry definitions are merged.
+```luce
+from fbx import Fbx
 
-Scene hierarchy/instances, node/geometric transforms, axis/unit conversion,
-normals/UVs/materials, animation, skinning and blend shapes are not implemented.
-Consequently a multi-object scene may overlap at its mesh-local origins. The
-File node labels this explicitly. This package is an import foundation, not
-general FBX compatibility or an Autodesk SDK replacement.
+let scene = Fbx.load("character.fbx")
+let merged = Fbx.load("city.fbx", instancing = false, convert_units = true)
+print(Fbx.warnings())
+```
 
-Reads at most 32 MiB and enforces modeling mesh limits. Binary offsets, parent
-bounds, array lengths/encodings and polygon indices are checked. ASCII 6.x legacy
-arrays are not supported. No texture or referenced file is opened automatically.
+`Fbx.load(path, keep_hierarchy, instancing, convert_units, normals)`:
 
-`./test.sh` runs the Luce regressions in `tests/` native and through the C
-backend: a pinned real Blender binary FBX fixture, generated
-compressed/uncompressed 7.4/7.5 variants, corruption and truncation. CI pins the
-compilers and sibling packages in `bootstrap/PACKAGES`. All runtime code is Base; donor C code remains outside the package.
+- every model's mesh is merged into one mesh in world space, each face's model
+  path in the text attribute `path` and its material in `material`;
+- a mesh several models share becomes one prototype with an instance row per
+  model (`instancing`, on by default);
+- with `keep_hierarchy`, every model's mesh stays in its own space, placed by
+  an instance row;
+- `convert_units` turns the file Y-up and scales it to meters;
+- `normals` imports the file's normals as `N`.
+
+[docs/MAPPING.md](docs/MAPPING.md) states the whole mapping and what is left
+out. [docs/PARITY.md](docs/PARITY.md) records the comparison with ufbx.
+
+## What it reads
+
+- Binary FBX 6.1 to 7.7 (32- and 64-bit records, big-endian files, raw and
+  zlib arrays) and ASCII FBX 6.1 and 7.x. FBX 5 and older is refused.
+- The object graph, property templates and global settings (axes, units,
+  frame rate).
+- The model hierarchy with FBX's full transform stack, matched to ufbx:
+  translation, rotation offset and pivot, pre- and post-rotation, the six
+  rotation orders, RotationActive, scaling offset and pivot, the three inherit
+  types and geometric transforms.
+- Meshes with every layer element (normals, tangents, binormals, UV sets,
+  color sets, smoothing, edge and vertex creases, holes, edge visibility,
+  materials) in every mapping and reference mode.
+- Line and NURBS curves, as geocore curves.
+
+## How it is built
+
+- `document/`: one flat node table for both encodings; arrays are recorded, not
+  decoded, and every array an import needs decodes in one parallel batch
+  (zlib per array, raw arrays in slices, ASCII in counted pieces) on
+  luce-geocore's pool.
+- `scene/`: objects, connections, templates, settings, the hierarchy and its
+  transforms.
+- `convert/`: the GeometrySet: meshes merged in parallel passes, layers as
+  attributes, instances, curves.
+
+Every size a file declares is checked against the bytes that hold it (a zlib
+array against what its stream can inflate to) and the whole load against
+physical memory; there is no fixed cap. Malformed files fail with an error,
+never a trap.
+
+## Tests
+
+`./test.sh` runs the Base checks (tests/main.lucb, native at opt 0 and 2 and
+through C) under a heap that counts live blocks and fails each allocation in
+turn, then the Luce API tests (tests/api). They cover the fixtures in
+tests/fixtures (ufbx's test files under its MIT license, and ours), one cube
+in six encodings, every truncation of a file, a byte-corruption sweep through
+the import, the transform stack against ufbx's matrices, and the conversion
+against ufbx's counts and sums. `tools/fbxdump` prints what luce-fbx reads in
+the form the local ufbx parity oracle prints.
+
+Apache-2.0 or MIT.
