@@ -227,7 +227,7 @@ func decode_one(batch: const Batch*, piece: Piece) -> !:
         convert(found.kind, bytes, job.element, out, piece.count)
         return
     if found.encoding == Encoding.zlib and same_layout(found.kind, job.element) and not document.big:
-        try inflate(document.data[found.offset..<found.offset + found.size], out)
+        try compress.inflate(document.data[found.offset..<found.offset + found.size], out)
         return
     # Through scratch: a zlib array of another type, or a big-endian array
     # (its elements swapped first).
@@ -236,16 +236,9 @@ func decode_one(batch: const Batch*, piece: Piece) -> !:
     if found.encoding == Encoding.raw:
         memory.copy(scratch, document.data[found.offset + piece.start * source_size..], scratch.length)
     else:
-        try inflate(document.data[found.offset..<found.offset + found.size], scratch)
+        try compress.inflate(document.data[found.offset..<found.offset + found.size], scratch)
     if document.big: swap_elements(scratch, source_size)
     convert(found.kind, scratch, job.element, out, piece.count)
-
-## Inflate a zlib array's stream into exactly `out`.
-func inflate(stream: const u8[], out: u8[]) -> !:
-    let used = flate.inflate_zlib(stream, out) catch failure:
-        if failure.code == memory.exhausted: error(failure.code, failure.message)
-        error(errors.invalid, "a zlib FBX array is corrupt")
-    if used != stream.length: error(errors.invalid, "a zlib FBX array has bytes after its stream")
 
 ## Reverse the bytes of each `size`-byte element.
 func swap_elements(bytes: u8[], size: usize):

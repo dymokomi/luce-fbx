@@ -19,7 +19,7 @@ def package "luce-fbx" {
     }
     def dependency "luce-compress" {
         str owner = "dymokomi"
-        str version = "^0.2.5"
+        str version = "^0.2.6"
         str path = "../luce-compress"
     }
     def dependency "luce-std" {

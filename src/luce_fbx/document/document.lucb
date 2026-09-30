@@ -15,7 +15,7 @@ import strings
 import geocore_parallel as pool
 import luce_fbx.errors as errors
 import luce_fbx.budget as budget
-import flate
+import compress
 from geocore_growing import Growing
 
 ## A property's kind is its FBX type code. Binary scalars: 'C' bool, 'Y'
