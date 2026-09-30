@@ -1,258 +1,52 @@
-## Static mesh extraction only: output is explicitly mesh-local geometry.
-## No C parser, SDK, subprocess, material/texture loading, animation or skinning.
-import files
-import c
-import strings
+## The luce-fbx export: FBX for Luce. Loading FBX files (binary and ASCII)
+## as luce-geocore GeometrySets. Everything here is a thin entry point; the
+## work is in document/, scene/ and convert/.
 import interop
 import memory
-import compress
-from geocore import Mesh, MeshBuilder, Vector3, invalid
+import luce_fbx.source as source
+import luce_fbx.convert as convert
+from luce_fbx.document import Document
+from luce_fbx.scene import Scene
+from geocore import GeometrySet
+from geocore_kernel import adopt_set
+from geocore_growing import Growing
+
+## The last load's warnings on this thread, up to 4 KiB of whole lines.
+local var last_warnings: u8[4096]
+local var last_length: usize
 
 pub struct Fbx:
     let reserved: u8 = 0
-    ## Read bounded ASCII or binary FBX 7.x mesh-local positions and polygons.
-    pub static func load(path: str) -> interop.Reference[Mesh]!:
-        if path.length == 0:
-            error(invalid, "FBX path is empty")
-        for byte in path.bytes:
-            if byte == 0:
-                error(invalid, "FBX path contains NUL")
-        let terminated = try strings.copy(path)
-        defer strings.release(terminated)
-        let data = try files.read_limit((c.str)terminated, 33554432)
-        defer free(data)
-        if data.length >= 23 and (str)data[..<20] == "Kaydara FBX Binary  ":
-            return try binary(data)
-        return try Fbx.decode_ascii((str)data)
 
-    ## Decode FBX 7.x ASCII arrays; scene transforms and attributes are not applied.
-    pub static func decode_ascii(text: str) -> interop.Reference[Mesh]!:
-        if text.length > 33554432:
-            error(invalid, "FBX input exceeds 32 MiB")
-        var mesh = try MeshBuilder()
-        defer mesh.close()
-        var at: usize = 0
-        var geometries: usize = 0
-        while at < text.length:
-            let start = find(text, "Vertices:", at) else break
-            let vertices = try ascii_array(text, start + 9)
-            let faces_at = find(text, "PolygonVertexIndex:", vertices.end) else error(invalid, "FBX mesh has no polygon indices")
-            if let next = find(text, "Vertices:", vertices.end):
-                if next < faces_at:
-                    error(invalid, "FBX mesh has no polygon indices")
-            let indices = try ascii_array(text, faces_at + 19)
-            var numbers = Numbers(vertices.values, 0)
-            let base = (i64)mesh.np
-            while numbers.has_next():
-                let x = try numbers.next()
-                let y = try numbers.next()
-                let z = try numbers.next()
-                discard(try mesh.point(Vector3(x, y, z)))
-            let point_count = (i64)mesh.np - base
-            var corners = Numbers(indices.values, 0)
-            var face: i64[256]
-            var count: usize = 0
-            while corners.has_next():
-                let value = try corners.next_integer()
-                let end = value < 0
-                if value == -9223372036854775807 - 1:
-                    error(invalid, "FBX polygon index overflow")
-                let index = -value - 1 if end else value
-                if index < 0 or index >= point_count or count == face.length:
-                    error(invalid, "FBX polygon index or size is invalid")
-                face[count] = base + index
-                count += 1
-                if end:
-                    try mesh.face((i64)count)
-                    for point in face[..<count]:
-                        try mesh.corner(point)
-                    count = 0
-            if count != 0:
-                error(invalid, "FBX polygon has no terminating index")
-            geometries += 1
-            at = indices.end
-        if geometries == 0:
-            error(invalid, "FBX contains no supported polygon geometry")
-        return try mesh.finish()
+    ## The scene of the FBX file at `path` as a GeometrySet (docs/MAPPING.md):
+    ## every mesh merged into one mesh in world space, each face's model path
+    ## in `path` and material in `material`. `keep_hierarchy` places each
+    ## model's mesh as an instance in its own space instead; `instancing`
+    ## loads a mesh several models share once, as instances;
+    ## `convert_units` turns the file Y-up and scales it to meters;
+    ## `normals` imports the file's normals as `N`. What was left out is in
+    ## `warnings()`.
+    pub static func load(path: str, keep_hierarchy: bool = false, instancing: bool = true, convert_units: bool = false, normals: bool = true) -> interop.Reference[GeometrySet]!:
+        let data = try source.read(path)
+        defer free(data) in memory.heap
+        var document = try Document.parse(data)
+        defer document.close()
+        var warnings = convert.Warnings()
+        defer warnings.close()
+        let options = convert.ImportOptions(keep_hierarchy = keep_hierarchy, instancing = instancing, convert_units = convert_units, normals = normals)
+        let set = try convert.import_document(&document, &options, &warnings)
+        remember(&warnings)
+        return try adopt_set(set)
 
-struct ArrayText:
-    let values: str
-    let end: usize
+    ## The warnings of this thread's last load, one per line.
+    pub static func warnings() -> interop.Owned[str]!:
+        return try interop.copy_text((str)last_warnings[..<last_length])
 
-func find(text: str, needle: str, start: usize) -> usize?:
-    var at = start
-    while at + needle.length <= text.length:
-        # Ignore comments and quoted names: neither contains structural fields.
-        if text.bytes[at] == 59:
-            while at < text.length and text.bytes[at] != 10:
-                at += 1
-            continue
-        if text.bytes[at] == 34:
-            at += 1
-            while at < text.length and text.bytes[at] != 34:
-                if text.bytes[at] == 92 and at + 1 < text.length:
-                    at += 1
-                at += 1
-            if at < text.length:
-                at += 1
-            continue
-        if (str)text.bytes[at..<at + needle.length] == needle:
-            return at
-        at += 1
-    return none
-
-func ascii_array(text: str, start: usize) -> ArrayText!:
-    let brace = find(text, "{", start) else error(invalid, "expected FBX 7.x numeric array")
-    let a = find(text, "a:", brace + 1) else error(invalid, "missing FBX array data")
-    let end = find(text, "}", a + 2) else error(invalid, "unterminated FBX array")
-    return ArrayText((str)text.bytes[a + 2..<end], end + 1)
-
-struct Numbers:
-    let text: str
-    var at: usize
-    mutating func has_next() -> bool:
-        while self.at < self.text.length and (self.text.bytes[self.at] <= 32 or self.text.bytes[self.at] == 44):
-            self.at += 1
-        return self.at < self.text.length
-    mutating func token() -> str!:
-        if not self.has_next():
-            error(invalid, "truncated FBX numeric array")
-        let start = self.at
-        while self.at < self.text.length and self.text.bytes[self.at] > 32 and self.text.bytes[self.at] != 44:
-            self.at += 1
-        return (str)self.text.bytes[start..<self.at]
-    mutating func next() -> f64!:
-        return try strings.parse_f64(try self.token())
-    mutating func next_integer() -> i64!:
-        return strings.parse_i64(try self.token()) else error(invalid, "expected FBX integer")
-
-struct Node:
-    let name: str
-    let property: usize
-    let children: usize
-    let end: usize
-
-func uint(data: const u8[], at: usize, bytes: usize) -> u64!:
-    if at > data.length or bytes > data.length - at:
-        error(invalid, "truncated binary FBX")
-    var result: u64 = 0
-    for index in 0..<bytes:
-        result |= (u64)data[at + index] << (index * 8)
-    return result
-
-func node(data: const u8[], at: usize, wide: bool) -> Node!:
-    let width: usize = 8 if wide else 4
-    let end = try uint(data, at, width)
-    if end == 0:
-        return Node("", at, at, at)
-    let bytes = try uint(data, at + width * 2, width)
-    let length = try uint(data, at + width * 3, 1)
-    let name = at + width * 3 + 1
-    let property = name + (usize)length
-    if end > (u64)data.length or end < (u64)property or bytes > end - (u64)property:
-        error(invalid, "binary FBX node offsets are invalid")
-    return Node((str)data[name..<property], property, property + (usize)bytes, (usize)end)
-
-func array(data: const u8[], at: usize, expected: u8, stride: usize) -> u8[]!:
-    if at >= data.length or data[at] != expected:
-        error(invalid, "unexpected binary FBX array type")
-    let count = try uint(data, at + 1, 4)
-    let encoding = try uint(data, at + 5, 4)
-    let size = try uint(data, at + 9, 4)
-    if count > 196608 or at + 13 > data.length or size > (u64)(data.length - at - 13):
-        error(invalid, "binary FBX array exceeds bounds")
-    let result = try alloc u8[(usize)count * stride] in memory.heap
-    errdefer free(result) in memory.heap
-    let payload = data[at + 13..<at + 13 + (usize)size]
-    if encoding == 0:
-        if result.length != payload.length:
-            error(invalid, "binary FBX array length mismatch")
-        memory.copy(result, payload, result.length)
-    elif encoding == 1:
-        try compress.inflate(payload, result)
-    else:
-        error(invalid, "unsupported binary FBX array encoding")
-    return result
-
-func binary(data: const u8[]) -> interop.Reference[Mesh]!:
-    let version = try uint(data, 23, 4)
-    if version < 7000 or version > 7700:
-        error(invalid, "supported binary FBX versions are 7.x")
-    let wide = version >= 7500
-    var mesh = try MeshBuilder()
-    defer mesh.close()
-    var at: usize = 27
-    var objects = Node("", 0, 0, 0)
-    while at < data.length:
-        let next = try node(data, at, wide)
-        if next.end == at:
-            break
-        if next.name == "Objects":
-            objects = next
-            break
-        at = next.end
-    if objects.name == "":
-        error(invalid, "binary FBX Objects section missing")
-    at = objects.children
-    while at < objects.end:
-        let geometry = try node(data, at, wide)
-        if geometry.end == at:
-            break
-        if geometry.end > objects.end:
-            error(invalid, "FBX object escapes its parent")
-        at = geometry.end
-        if geometry.name != "Geometry":
-            continue
-        var child = geometry.children
-        var vp: usize = 0
-        var ip: usize = 0
-        var ve: usize = 0
-        var ie: usize = 0
-        while child < geometry.end:
-            let entry = try node(data, child, wide)
-            if entry.end == child:
-                break
-            if entry.end > geometry.end:
-                error(invalid, "FBX child escapes its geometry")
-            if entry.name == "Vertices":
-                vp = entry.property
-                ve = entry.children
-            if entry.name == "PolygonVertexIndex":
-                ip = entry.property
-                ie = entry.children
-            child = entry.end
-        if vp == 0 or ip == 0:
-            error(invalid, "FBX contains unsupported non-polygon geometry")
-        let vertices = try array(data[..<ve], vp, 100, 8)
-        defer free(vertices) in memory.heap
-        let indices = try array(data[..<ie], ip, 105, 4)
-        defer free(indices) in memory.heap
-        if vertices.length % 24 != 0:
-            error(invalid, "FBX positions are not triples")
-        let base = (i64)mesh.np
-        let count = vertices.length // 24
-        for index in 0..<count:
-            let xb = try uint(vertices, index * 24, 8)
-            let yb = try uint(vertices, index * 24 + 8, 8)
-            let zb = try uint(vertices, index * 24 + 16, 8)
-            discard(try mesh.point(Vector3(memory.read[f64](&xb), memory.read[f64](&yb), memory.read[f64](&zb))))
-        var face: i64[256]
-        var n: usize = 0
-        for index in 0..<indices.length // 4:
-            let raw = try uint(indices, index * 4, 4)
-            let value = (i64)raw - 4294967296 if raw >= 2147483648 else (i64)raw
-            let vertex = -value - 1 if value < 0 else value
-            if vertex < 0 or vertex >= (i64)count or n == face.length:
-                error(invalid, "FBX polygon index is out of range")
-            face[n] = base + vertex
-            n += 1
-            if value < 0:
-                try mesh.face((i64)n)
-                for point in face[..<n]:
-                    try mesh.corner(point)
-                n = 0
-        if n != 0:
-            error(invalid, "FBX polygon has no terminating index")
-    if mesh.np == 0:
-        error(invalid, "FBX contains no polygon geometry")
-    return try mesh.finish()
+func remember(warnings: const convert.Warnings*):
+    let text = warnings.text.view()
+    var length = text.length
+    if length > last_warnings.length:
+        length = last_warnings.length
+        while length > 0 and text[length - 1] != 10: length -= 1
+    memory.copy(last_warnings[..<length], text[..<length], length)
+    last_length = length

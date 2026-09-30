@@ -3,7 +3,8 @@
 ## encodings decodes to the same arrays; every truncation and a sweep of
 ## byte corruptions fail cleanly (an error, never a trap or a leak).
 import memory
-from fbx_kernel import Document, ArrayJob, Element, Scene, read_file, invalid
+from fbx_kernel import Document, ArrayJob, Element, Scene, ImportOptions, Warnings, import_document, read_file, invalid
+from geocore_kernel import dispose_set
 from geocore_growing import Growing
 
 ## The fixtures every check reads.
@@ -114,4 +115,11 @@ func survives(data: const u8[]) -> bool!:
         if failure.code == memory.exhausted: error(failure.code, failure.message)
         return true
     hierarchy.close()
+    var warnings = Warnings()
+    defer warnings.close()
+    let options = ImportOptions()
+    let set = import_document(&document, &options, &warnings) catch failure:
+        if failure.code == memory.exhausted: error(failure.code, failure.message)
+        return true
+    dispose_set(set)
     return true

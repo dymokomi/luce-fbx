@@ -1,0 +1,77 @@
+## Layers mapped by edge. FBX numbers a mesh's edges by its `Edges` array:
+## edge i joins polygon vertex Edges[i] and the next polygon vertex of its
+## face. Each one is found as the merged corner of that polygon vertex (or,
+## in a face the build reversed, of the next one), whose edge geocore
+## knows (corner_edge_span). A geometry without an Edges array cannot map
+## them and is skipped with a warning.
+
+## An edge attribute (`crease`, x10) or an edge group (`sharp` where
+## smoothing is 0, `hidden` where visibility is 0) from the edge layers.
+func put_edge_values(mesh: Mesh*, build: const MeshBuild*, geometries: const MeshGeometry[], plan: Planned, name: str, warnings: Warnings*) -> !:
+    let corner_edges = try corner_edge_span(mesh)
+    let edge_count = (usize)try mesh.edge_count()
+    let group = name != "crease"
+    var attribute = try Attribute.group(name, Domain.edge, edge_count) if group else try Attribute.create(name, Domain.edge, DataType.float32, 1, edge_count)
+    # put_attribute takes the attribute even when it fails.
+    var handed = false
+    errdefer:
+        if not handed: attribute.release()
+    let bytes = attribute.data.span()
+    let bits = u64[]((u64*)bytes.data, bytes.length // 8 if group else 0)
+    let values = f32[]((f32*)bytes.data, 0 if group else edge_count)
+    for at in 0..<values.length: values[at] = 0.0
+    var any = false
+    for source in build.sources.view():
+        let geometry = &geometries[source.geometry]
+        let layer = layer_for(geometry, plan) else continue
+        if layer.mapping != Mapping.edge: continue
+        if geometry.edges.length == 0:
+            try warnings.add("Edge layers of meshes without an Edges array were left out")
+            continue
+        var targets = try merged_corners(build, geometry, &source)
+        defer free(targets) in memory.heap
+        for edge in 0..<geometry.edges.length:
+            let value = layer.value_of(edge) else continue
+            let vertex = geometry.edges[edge]
+            if vertex < 0 or (usize)vertex >= geometry.indices.length: continue
+            let from_vertex = next_vertex(geometry, (usize)vertex) if source.flip else (usize)vertex
+            let corner = targets[from_vertex]
+            if corner < 0: continue
+            let target = (usize)corner_edges[(usize)corner]
+            if group:
+                let number = layer.integers[value] if layer.integers.length > 0 else (i32)layer.values[value]
+                if number == 0: bits[target // 64] = bits[target // 64] | ((u64)1 << (u64)(target % 64))
+            else:
+                values[target] = layer.values[value] * 10.0
+            any = true
+    handed = true
+    if any: try put_attribute(mesh, attribute)
+    else: attribute.release()
+
+## Each polygon vertex's corner in the merged mesh (-1 in dropped faces),
+## for one source; the caller frees it.
+func merged_corners(build: const MeshBuild*, geometry: const MeshGeometry*, source: const Source*) -> i32[]!:
+    let targets = try alloc i32[geometry.indices.length] in memory.heap
+    for at in 0..<targets.length: targets[at] = -1
+    let corner_source = build.corner_source.view()
+    let offsets = build.offsets.view()
+    let first = (usize)offsets[source.face_base]
+    let end = (usize)offsets[source.face_end]
+    for corner in first..<end:
+        let vertex = (usize)corner_source[corner]
+        if targets[vertex] < 0: targets[vertex] = (i32)corner
+    return targets
+
+## The polygon vertex after `vertex` in its face (the face's first after
+## its last).
+func next_vertex(geometry: const MeshGeometry*, vertex: usize) -> usize:
+    if geometry.indices[vertex] >= 0 and vertex + 1 < geometry.indices.length: return vertex + 1
+    # The last of its face: back to the face's first.
+    let starts = geometry.faces.view()
+    var low: usize = 0
+    var high = starts.length - 1
+    while low + 1 < high:
+        let middle = (low + high) // 2
+        if (usize)starts[middle] <= vertex: low = middle
+        else: high = middle
+    return (usize)starts[low]

@@ -7,8 +7,10 @@
 import c
 import memory
 import geocore_parallel as pool
-from fbx_kernel import Document, Scene, Hierarchy, Kind, read_file
-from geocore import Matrix4, Vector3
+from fbx_kernel import Document, Scene, Hierarchy, Kind, ImportOptions, Warnings, import_document, read_file
+from geocore import Matrix4, Vector3, Mesh
+from geocore_kernel import GeometrySet, Attribute, Domain, DataType, Float3, Curves, set_mesh, set_find, curves_type, dispose_set, point_span, mesh_origin, offset_span, corner_span, attribute_entry
+from geocore_growing import Growing
 
 pub func main(arguments: str[]) -> i32!:
     if arguments.length < 2:
@@ -40,7 +42,181 @@ pub func main(arguments: str[]) -> i32!:
         let matrix = matrix_text(&entry.world, numbers)
         let inherit = (u8)entry.inherit
         print(f"node\t{hierarchy.path(model)}\tkind={scene.model_kind(entry.object)}\tinherit={inherit}\tworld={matrix}")
+    # The imported mesh, every model merged (no instances), by path.
+    var warnings = Warnings()
+    defer warnings.close()
+    let options = ImportOptions(keep_hierarchy = false, instancing = false, convert_units = false, normals = true)
+    let set = import_document(&document, &options, &warnings) catch failure:
+        print(f"error import {failure.message}")
+        return 1
+    defer dispose_set(set)
+    if let mesh = set_mesh(set): try dump_mesh(mesh)
+    if let found = set_find(set, curves_type()): try dump_curves((const Curves*)found)
     return 0
+
+## Per path: its curves' kind (nurbs or line) and control point count.
+func dump_curves(curves: const Curves*) -> !:
+    let store = curves.store()
+    let path_index = store.find("path", 2)
+    if path_index < 0: return
+    let paths = store.entry((usize)path_index)
+    let type_index = store.find("curve_type", 2)
+    let count = curves.curve_count()
+    var done = Growing[i32]()
+    defer done.close()
+    for curve in 0..<count:
+        let key = text_index(paths, curve)
+        var skip = false
+        for earlier in done.view(): skip = skip or earlier == key
+        if skip: continue
+        try done.push(key)
+        var points: usize = 0
+        var nurbs = false
+        for other in curve..<count:
+            if text_index(paths, other) != key: continue
+            points += curves.range(other).1
+            if type_index >= 0: nurbs = store.entry((usize)type_index).number(other, 0) == 2.0
+        let kind = "nurbs" if nurbs else "line"
+        print(f"curve\t{paths.text_at(curve)}\tkind={kind}\tpoints={points}")
+
+## Per model path: face and corner counts, the used points' world
+## positions, each attribute summed over the path's corners, and faces per
+## material.
+func dump_mesh(mesh: const Mesh*) -> !:
+    let path_index = mesh.find_attribute("path", 2)
+    if path_index < 0: return
+    let paths = try attribute_entry(mesh, path_index)
+    let offsets = offset_span(mesh)
+    let corners = corner_span(mesh)
+    let points = point_span(mesh)
+    let origin = mesh_origin(mesh)
+    let faces = offsets.length - 1
+    # Faces of each path, in face order; paths in first-face order.
+    var order = Growing[u32]()
+    defer order.close()
+    for face in 0..<faces: try order.push((u32)face)
+    var seen = Growing[u8]()
+    defer seen.close()
+    try seen.fill(points.length, 0)
+    var face: usize = 0
+    var done = Growing[i32]()
+    defer done.close()
+    while face < faces:
+        let key = text_index(paths, face)
+        var skip = false
+        for earlier in done.view(): skip = skip or earlier == key
+        if skip:
+            face += 1
+            continue
+        try done.push(key)
+        let path = paths.text_at(face)
+        var count: usize = 0
+        var corner_total: usize = 0
+        var used: usize = 0
+        var sum: f64[3] = [0.0, 0.0, 0.0]
+        var low: f64[3] = [1.0e300, 1.0e300, 1.0e300]
+        var high: f64[3] = [-1.0e300, -1.0e300, -1.0e300]
+        for other in face..<faces:
+            if text_index(paths, other) != key: continue
+            count += 1
+            for corner in (usize)offsets[other]..<(usize)offsets[other + 1]:
+                corner_total += 1
+                let point = (usize)corners[corner]
+                if seen.items[point] != 0: continue
+                seen.items[point] = 1
+                used += 1
+                let p = points[point]
+                let world: f64[3] = [(f64)p.x + origin.x, (f64)p.y + origin.y, (f64)p.z + origin.z]
+                for k in 0..<(usize)3:
+                    sum[k] += world[k]
+                    if world[k] < low[k]: low[k] = world[k]
+                    if world[k] > high[k]: high[k] = world[k]
+        print(f"mesh\t{path}\tfaces={count}\tcorners={corner_total}")
+        var numbers: u8[256] = ---
+        print(f"pos\t{path}\tn={used}\tsum={triple(sum, numbers)}")
+        try dump_attributes(mesh, paths, key, path, offsets, corners)
+        try dump_materials(mesh, paths, key, path)
+        face += 1
+
+func text_index(attribute: const Attribute*, element: usize) -> i32:
+    return memory.read[i32]((void*)&attribute.data.view()[element * 4])
+
+## Each float attribute of the mesh summed over the path's corners (point
+## and face values once per corner).
+func dump_attributes(mesh: const Mesh*, paths: const Attribute*, key: i32, path: str, offsets: const i32[], corners: const i32[]) -> !:
+    let faces = offsets.length - 1
+    for index in 0..<mesh.attribute_count():
+        let attribute = try attribute_entry(mesh, index)
+        if attribute.kind != DataType.float32 or attribute.is_group(): continue
+        let domain = attribute.domain
+        if domain == Domain.edge or domain == Domain.detail: continue
+        var sum: f64[4] = [0.0, 0.0, 0.0, 0.0]
+        var n: usize = 0
+        for face in 0..<faces:
+            if text_index(paths, face) != key: continue
+            for corner in (usize)offsets[face]..<(usize)offsets[face + 1]:
+                var element = corner
+                if domain == Domain.point: element = (usize)corners[corner]
+                if domain == Domain.face: element = face
+                for k in 0..<attribute.width: sum[k] += attribute.number(element, k)
+                n += 1
+        var text: u8[256] = ---
+        var used: usize = 0
+        for k in 0..<attribute.width:
+            if k > 0:
+                text[used] = ','
+                used += 1
+            var number: u8[32] = ---
+            let part = g(sum[k], number)
+            memory.copy(text[used..], part.bytes, part.length)
+            used += part.length
+        print(f"attr\t{path}\t{attribute.name()}\tn={n}\tsum={(str)text[..<used]}")
+
+## Faces per material name among the path's faces, names in first-face
+## order, faces without a material left out.
+func dump_materials(mesh: const Mesh*, paths: const Attribute*, key: i32, path: str) -> !:
+    let index = mesh.find_attribute("material", 2)
+    if index < 0: return
+    let materials = try attribute_entry(mesh, index)
+    let faces = materials.elements
+    var names = Growing[i32]()
+    defer names.close()
+    var counts = Growing[usize]()
+    defer counts.close()
+    for face in 0..<faces:
+        if text_index(paths, face) != key: continue
+        let name = text_index(materials, face)
+        if materials.text_at(face).length == 0: continue
+        var slot = names.count
+        for at in 0..<names.count:
+            if names.items[at] == name: slot = at
+        if slot == names.count:
+            try names.push(name)
+            try counts.push(0)
+        counts.items[slot] += 1
+    if names.count == 0: return
+    var line = Growing[u8]()
+    defer line.close()
+    for at in 0..<names.count:
+        if at > 0: try line.push('|')
+        var first_face: usize = 0
+        while text_index(materials, first_face) != names.items[at]: first_face += 1
+        for byte in materials.text_at(first_face).bytes: try line.push(byte)
+        var digits: u8[32] = ---
+        for byte in (try format(digits, f":{counts.items[at]}")).bytes: try line.push(byte)
+    print(f"mat\t{path}\t{(str)line.view()}")
+
+func triple(values: f64[3], out: u8[]) -> str:
+    var used: usize = 0
+    for k in 0..<3:
+        if k > 0:
+            out[used] = ','
+            used += 1
+        var number: u8[32] = ---
+        let part = g(values[k], number)
+        memory.copy(out[used..], part.bytes, part.length)
+        used += part.length
+    return (str)out[..<used]
 
 extern func snprintf(output: u8*, size: usize, format: c.str, ...) -> i32
 

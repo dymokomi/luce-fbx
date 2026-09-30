@@ -115,7 +115,7 @@ extend Document:
             let found = &self.properties.items[at]
             if found.kind == 'N':
                 let token = self.data[found.offset..<found.offset + found.size]
-                let real = try parse_real(token)
+                let real = parse_real(token)
                 found.real = real
                 found.integer = parse_integer(token) else (i64)real
 
@@ -256,7 +256,7 @@ func is_special_number(word: const u8[]) -> bool:
 ## `token` as a real number: decimal text, inf, infinity and nan in any
 ## case (nan with a payload in parentheses), and the MSVC spellings 1.#INF,
 ## 1.#IND and 1.#QNAN.
-pub func parse_real(token: const u8[]) -> f64!:
+pub func parse_real(token: const u8[]) -> f64:
     if is_special_number(token):
         let negative = token[0] == '-'
         if (token[0 if not (token[0] == '-' or token[0] == '+') else 1] | 0x20) == 'i': return -math.infinity if negative else math.infinity
@@ -267,6 +267,8 @@ pub func parse_real(token: const u8[]) -> f64!:
             if at + 1 < token.length and (token[at + 1] == 'I' or token[at + 1] == 'i') and at + 3 < token.length and (token[at + 3] == 'F' or token[at + 3] == 'f'):
                 return -math.infinity if negative else math.infinity
             return math.nan
+    # Anything else that looks like a number but is not (1.2.3, snan) reads
+    # as NaN, as ufbx reads it, rather than failing the file.
     return strings.parse_f64((str)token) catch failure:
         discard(failure)
-        error(errors.invalid, "an ASCII FBX number is not understood")
+        recover math.nan

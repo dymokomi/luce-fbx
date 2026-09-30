@@ -8,6 +8,11 @@ accompanying UFBX-LICENSE.txt (MIT alternative):
   `maya_zero_end_7400_binary.fbx`, `maya_cube_6100_binary.fbx`,
   `maya_cube_6100_ascii.fbx`, `maya_cube_7500_ascii.fbx`: one cube in the
   encodings the reader must agree on.
+- `blender_293_instancing_7400_binary.fbx` (eight models sharing a mesh),
+  `blender_279_color_sets_7400_binary.fbx`,
+  `blender_293x_subsurf_max_crease_7400_binary.fbx`,
+  `max_edge_visibility_7500_binary.fbx`, `max_curve_line_7500_ascii.fbx`,
+  `max_nurbs_curve_rational_7500_ascii.fbx`: the conversion checks.
 
 Ours:
 
@@ -16,6 +21,7 @@ Ours:
   transforms, sibling names). tests/scene_checks.lucb holds the matrices ufbx
   computes for it.
 
-`tests/generate_fixtures.py` writes the compressed/uncompressed 7.4/7.5
-variants and the corrupt and truncated files at test time. No ufbx code is
+`tests/generate_fixtures.py` writes a triangle under a Model in compressed
+and uncompressed 7.4/7.5 variants, and corrupt and truncated copies, at test
+time. No ufbx code is
 linked or shipped; the comparison against ufbx runs locally.

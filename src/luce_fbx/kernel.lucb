@@ -33,3 +33,9 @@ pub type TransformInputs = scene.TransformInputs
 pub type Trs = scene.Trs
 pub type Quat = scene.Quat
 pub let absent = scene.absent
+
+import luce_fbx.convert as convert
+
+pub type ImportOptions = convert.ImportOptions
+pub type Warnings = convert.Warnings
+pub let import_document = convert.import_document

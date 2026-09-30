@@ -1,0 +1,122 @@
+## Layer elements as merged-mesh attributes (docs/MAPPING.md):
+##
+## | layer | attribute |
+## |---|---|
+## | Normal, Tangent, Binormal | `N`, `tangentu`, `tangentv` (then `N2`...) |
+## | UV | `uv`, `uv2`, ... |
+## | Color | `Cd` (RGB) and `Alpha`, then `Cd2`, `Alpha2`, ... |
+## | Smoothing by polygon / by edge | face `smoothing_group` / edge group `sharp` |
+## | EdgeCrease, VertexCrease | edge `crease`, point `corner_sharpness`, x10 |
+## | Hole | face group `hole` |
+## | Visibility by edge | edge group `hidden` |
+##
+## The domain follows the mapping: by polygon vertex is the corner domain,
+## by vertex the point domain, by polygon (and all same) the face domain.
+## When the merged sources disagree the corner domain holds them all.
+## Sources without a layer leave their elements zero. Every fill runs in
+## parallel chunks of each source's faces or points.
+
+## One merged attribute and the layers that fill it.
+struct Planned:
+    var kind: LayerKind
+    ## The kind's n-th set (0 is the first).
+    var ordinal: usize
+    var domain: Domain
+
+## Put every layer-backed attribute on `mesh`.
+func put_layer_attributes(mesh: Mesh*, build: const MeshBuild*, geometries: const MeshGeometry[], options: const ImportOptions*, warnings: Warnings*) -> !:
+    var planned = Growing[Planned]()
+    defer planned.close()
+    try plan_attributes(build, geometries, options, &planned, warnings)
+    for plan in planned.view():
+        match plan.kind:
+            .normal: try put_numbers(mesh, build, geometries, plan, normal_names[plan.ordinal], 0, 3, 1.0)
+            .tangent: try put_numbers(mesh, build, geometries, plan, tangent_names[plan.ordinal], 0, 3, 1.0)
+            .binormal: try put_numbers(mesh, build, geometries, plan, binormal_names[plan.ordinal], 0, 3, 1.0)
+            .uv: try put_numbers(mesh, build, geometries, plan, uv_names[plan.ordinal], 0, 2, 1.0)
+            .color:
+                try put_numbers(mesh, build, geometries, plan, color_names[plan.ordinal], 0, 3, 1.0)
+                try put_numbers(mesh, build, geometries, plan, alpha_names[plan.ordinal], 3, 1, 1.0)
+            .vertex_crease: try put_numbers(mesh, build, geometries, plan, "corner_sharpness", 0, 1, 10.0)
+            .smoothing:
+                if plan.domain == Domain.edge: try put_edge_values(mesh, build, geometries, plan, "sharp", warnings)
+                else: try put_integers(mesh, build, geometries, plan, "smoothing_group")
+            .edge_crease: try put_edge_values(mesh, build, geometries, plan, "crease", warnings)
+            .visibility: try put_edge_values(mesh, build, geometries, plan, "hidden", warnings)
+            .hole: try put_face_group(mesh, build, geometries, plan, "hole")
+            _: continue
+
+## Attribute names by set: the first set's, then the second's, ...
+let normal_names: str[16] = ["N", "N2", "N3", "N4", "N5", "N6", "N7", "N8", "N9", "N10", "N11", "N12", "N13", "N14", "N15", "N16"]
+let tangent_names: str[16] = ["tangentu", "tangentu2", "tangentu3", "tangentu4", "tangentu5", "tangentu6", "tangentu7", "tangentu8", "tangentu9", "tangentu10", "tangentu11", "tangentu12", "tangentu13", "tangentu14", "tangentu15", "tangentu16"]
+let binormal_names: str[16] = ["tangentv", "tangentv2", "tangentv3", "tangentv4", "tangentv5", "tangentv6", "tangentv7", "tangentv8", "tangentv9", "tangentv10", "tangentv11", "tangentv12", "tangentv13", "tangentv14", "tangentv15", "tangentv16"]
+let uv_names: str[16] = ["uv", "uv2", "uv3", "uv4", "uv5", "uv6", "uv7", "uv8", "uv9", "uv10", "uv11", "uv12", "uv13", "uv14", "uv15", "uv16"]
+let color_names: str[16] = ["Cd", "Cd2", "Cd3", "Cd4", "Cd5", "Cd6", "Cd7", "Cd8", "Cd9", "Cd10", "Cd11", "Cd12", "Cd13", "Cd14", "Cd15", "Cd16"]
+let alpha_names: str[16] = ["Alpha", "Alpha2", "Alpha3", "Alpha4", "Alpha5", "Alpha6", "Alpha7", "Alpha8", "Alpha9", "Alpha10", "Alpha11", "Alpha12", "Alpha13", "Alpha14", "Alpha15", "Alpha16"]
+## Sets past the sixteenth of a kind are left out.
+let most_sets: usize = 16
+
+## Which attributes the sources' layers make, and on which domains.
+func plan_attributes(build: const MeshBuild*, geometries: const MeshGeometry[], options: const ImportOptions*, planned: Growing[Planned]*, warnings: Warnings*) -> !:
+    for source in build.sources.view():
+        let geometry = &geometries[source.geometry]
+        for index in 0..<geometry.layers.count:
+            let layer = &geometry.layers.items[index]
+            if layer.kind == LayerKind.material: continue
+            if layer.kind == LayerKind.normal and not options.normals: continue
+            let ordinal = ordinal_of(geometry, layer)
+            if ordinal >= most_sets:
+                try warnings.add("Layer sets past the sixteenth of a kind were left out")
+                continue
+            let domain = domain_of(layer) else continue
+            var found = false
+            for slot in 0..<planned.count:
+                let entry = &planned.items[slot]
+                if entry.kind == layer.kind and entry.ordinal == ordinal:
+                    found = true
+                    if entry.domain != domain: entry.domain = merged_domain(entry.domain, domain)
+            if not found: try planned.push(Planned(kind = layer.kind, ordinal = ordinal, domain = domain))
+
+## Where a layer's values land, or none for a mapping that cannot carry it.
+func domain_of(layer: const Layer*) -> Domain?:
+    match layer.kind:
+        .edge_crease, .visibility:
+            if layer.mapping == Mapping.edge: return Domain.edge
+            return none
+        .smoothing:
+            if layer.mapping == Mapping.edge: return Domain.edge
+            if layer.mapping == Mapping.polygon or layer.mapping == Mapping.all_same: return Domain.face
+            return none
+        .hole:
+            if layer.mapping == Mapping.polygon or layer.mapping == Mapping.all_same: return Domain.face
+            return none
+        .vertex_crease:
+            if layer.mapping == Mapping.vertex: return Domain.point
+            return none
+        _:
+            match layer.mapping:
+                .polygon_vertex: return Domain.corner
+                .vertex: return Domain.point
+                .polygon, .all_same: return Domain.face
+                _: return none
+
+## Two sources' domains for one attribute: the corner domain holds any
+## point, face or corner values.
+func merged_domain(a: Domain, b: Domain) -> Domain:
+    if a == b: return a
+    if a == Domain.edge or b == Domain.edge: return Domain.edge
+    return Domain.corner
+
+## A layer's place among its geometry's layers of the same kind, by set.
+func ordinal_of(geometry: const MeshGeometry*, layer: const Layer*) -> usize:
+    var ordinal: usize = 0
+    for other in geometry.layers.view():
+        if other.kind == layer.kind and other.set < layer.set: ordinal += 1
+    return ordinal
+
+## The layer of `geometry` a planned attribute reads, if it has one.
+func layer_for(geometry: const MeshGeometry*, plan: Planned) -> const Layer*?:
+    for index in 0..<geometry.layers.count:
+        let layer = &geometry.layers.items[index]
+        if layer.kind == plan.kind and ordinal_of(geometry, layer) == plan.ordinal: return layer
+    return none

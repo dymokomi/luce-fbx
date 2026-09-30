@@ -61,7 +61,7 @@ extend Scene:
         let found = source.property(rate, 0) else return none
         var value: f64 = 0.0
         if found.kind == 'S':
-            value = document.parse_real(source.data[found.offset..<found.offset + found.size]) else 0.0
+            value = document.parse_real(source.data[found.offset..<found.offset + found.size])
         else:
             value = document.scalar_real(found) else 0.0
         if value > 0.0: return value

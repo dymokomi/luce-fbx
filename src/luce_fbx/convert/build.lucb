@@ -1,0 +1,210 @@
+## Mesh sources merged into one geocore mesh. A source is one use of a
+## geometry: its points placed by a matrix (world, or identity for an
+## instance prototype), its faces in order. In parallel passes over chunks
+## of each source's faces: count what each chunk keeps (faces of 3 to 256
+## corners; larger faces as fans of triangles; smaller ones dropped), then
+## write offsets and corners (reversed after the first corner under a
+## mirroring matrix) with the maps back to each source's faces and polygon
+## vertices, which the attribute passes read. Points are placed in f64 and
+## stored as f32 over the mesh's origin. geocore computes the face normals
+## and display triangles when it assembles the mesh.
+
+## geocore's largest face; larger ones become triangles (big_faces.lucb).
+let most_corners: usize = 256
+
+## One use of a geometry in the merged mesh.
+pub struct Source:
+    pub var geometry: usize
+    pub var matrix: Matrix4
+    pub var flip: bool
+    ## Its model's path (a path table index) and its materials: the model's
+    ## connected materials, names in the material table.
+    pub var path: i32
+    pub var materials_first: usize
+    pub var materials_count: usize
+    ## Where its points, faces and corners start in the merged mesh.
+    pub var point_base: usize
+    pub var face_base: usize
+    pub var corner_base: usize
+    pub var face_end: usize
+
+pub struct MeshBuild:
+    pub var sources: Growing[Source]
+    pub var origin: Vector3
+    pub var positions: Column[Float3]
+    pub var offsets: Column[i32]
+    pub var corners: Column[i32]
+    ## Each merged face's face in its source, and each merged corner's
+    ## polygon vertex in its source.
+    pub var face_source: Column[i32]
+    pub var corner_source: Column[i32]
+    pub var points: usize
+    pub var faces: usize
+    pub var corner_total: usize
+
+    pub func init():
+        self.sources = Growing[Source]()
+        self.origin = Vector3()
+        self.positions = Column[Float3]()
+        self.offsets = Column[i32]()
+        self.corners = Column[i32]()
+        self.face_source = Column[i32]()
+        self.corner_source = Column[i32]()
+        self.points = 0
+        self.faces = 0
+        self.corner_total = 0
+
+    pub mutating func close():
+        self.sources.close()
+        self.positions.release()
+        self.offsets.release()
+        self.corners.release()
+        self.face_source.release()
+        self.corner_source.release()
+
+struct FaceChunk:
+    var source: usize
+    var first: usize
+    var end: usize
+    var kept_faces: usize
+    var kept_corners: usize
+    var dropped: usize
+    var split: usize
+    var out_face: usize
+    var out_corner: usize
+
+struct FaceWork:
+    var geometries: const MeshGeometry[]
+    var sources: const Source[]
+    var chunks: FaceChunk[]
+    var offsets: i32[]
+    var corners: i32[]
+    var face_source: i32[]
+    var corner_source: i32[]
+
+## Build the merged topology and points of `build.sources`.
+func build_mesh(build: MeshBuild*, geometries: const MeshGeometry[], warnings: Warnings*) -> !:
+    var chunks = Growing[FaceChunk]()
+    defer chunks.close()
+    var points: usize = 0
+    for index in 0..<build.sources.count:
+        let source = &build.sources.items[index]
+        source.point_base = points
+        let geometry = &geometries[source.geometry]
+        points += geometry.point_count()
+        let faces = geometry.face_count()
+        var first: usize = 0
+        while first < faces:
+            let end = first + grain if faces - first > grain else faces
+            try chunks.push(FaceChunk(source = index, first = first, end = end, kept_faces = 0, kept_corners = 0, dropped = 0, split = 0, out_face = 0, out_corner = 0))
+            first = end
+    var unset: i32[]
+    var work = FaceWork(geometries, build.sources.items[..<build.sources.count], chunks.items[..<chunks.count], unset, unset, unset, unset)
+    pool.run(chunks.count, count_chunk, (void*)&work)
+    var faces: usize = 0
+    var corners: usize = 0
+    var dropped: usize = 0
+    var split: usize = 0
+    var last = build.sources.count
+    for index in 0..<chunks.count:
+        let chunk = &chunks.items[index]
+        if chunk.source != last:
+            if last < build.sources.count: build.sources.items[last].face_end = faces
+            last = chunk.source
+            build.sources.items[last].face_base = faces
+            build.sources.items[last].corner_base = corners
+        chunk.out_face = faces
+        chunk.out_corner = corners
+        faces += chunk.kept_faces
+        corners += chunk.kept_corners
+        dropped += chunk.dropped
+        split += chunk.split
+    if last < build.sources.count: build.sources.items[last].face_end = faces
+    if dropped > 0: try warnings.count(dropped, " faces with fewer than 3 corners were dropped")
+    if split > 0: try warnings.count(split, " faces of more than 256 corners were made triangles")
+    if points > 8388608 or faces > 8388608 or corners > 33554432:
+        error(errors.limit, "the FBX meshes exceed geocore's 8,388,608 points or faces or 33,554,432 corners")
+    build.points = points
+    build.faces = faces
+    build.corner_total = corners
+    build.offsets = try Column[i32].allocate(faces + 1)
+    build.corners = try Column[i32].allocate(corners)
+    build.face_source = try Column[i32].allocate(faces)
+    build.corner_source = try Column[i32].allocate(corners)
+    work.offsets = build.offsets.span()
+    work.corners = build.corners.span()
+    work.face_source = build.face_source.span()
+    work.corner_source = build.corner_source.span()
+    pool.run(chunks.count, write_chunk, (void*)&work)
+    work.offsets[faces] = (i32)corners
+    try place_points(build, geometries)
+
+## What a chunk keeps.
+func count_chunk(context: void*?, index: usize):
+    let work = (FaceWork*)(context else return)
+    let chunk = &work.chunks[index]
+    let geometry = &work.geometries[work.sources[chunk.source].geometry]
+    let starts = geometry.faces.view()
+    for face in chunk.first..<chunk.end:
+        let size = (usize)(starts[face + 1] - starts[face])
+        if size < 3:
+            chunk.dropped += 1
+        elif size > most_corners:
+            chunk.split += 1
+            chunk.kept_faces += size - 2
+            chunk.kept_corners += (size - 2) * 3
+        else:
+            chunk.kept_faces += 1
+            chunk.kept_corners += size
+
+## Write a chunk's kept faces.
+func write_chunk(context: void*?, index: usize):
+    let work = (FaceWork*)(context else return)
+    let chunk = &work.chunks[index]
+    let source = &work.sources[chunk.source]
+    let geometry = &work.geometries[source.geometry]
+    let starts = geometry.faces.view()
+    let indices = geometry.indices
+    let base = (i32)source.point_base
+    var out_face = chunk.out_face
+    var out_corner = chunk.out_corner
+    for face in chunk.first..<chunk.end:
+        let start = (usize)starts[face]
+        let size = (usize)(starts[face + 1] - starts[face])
+        if size < 3: continue
+        if size > most_corners:
+            # Its triangles, each a face (reversed for a mirroring use).
+            let triangles = big_face_triangles(geometry, face)
+            var t: usize = 0
+            while t < triangles.length:
+                work.offsets[out_face] = (i32)out_corner
+                work.face_source[out_face] = (i32)face
+                for at: usize in 0..<3:
+                    let corner = (usize)triangles[t + (0 if at == 0 else 3 - at) if source.flip else t + at]
+                    let taken = start + corner
+                    work.corners[out_corner + at] = point_at(indices, taken) + base
+                    work.corner_source[out_corner + at] = (i32)taken
+                out_face += 1
+                out_corner += 3
+                t += 3
+            continue
+        work.offsets[out_face] = (i32)out_corner
+        work.face_source[out_face] = (i32)face
+        for k in 0..<size:
+            let taken = start + (0 if k == 0 else size - k) if source.flip else start + k
+            work.corners[out_corner + k] = point_at(indices, taken) + base
+            work.corner_source[out_corner + k] = (i32)taken
+        out_face += 1
+        out_corner += size
+
+## The merged mesh from a finished build (its columns taken).
+func assemble_mesh(build: MeshBuild*) -> Mesh*!:
+    var slots: usize = 0
+    if build.faces > 0: slots = build.corner_total * 3 - build.faces * 6
+    var no_triangles = try Column[i32].allocate(slots)
+    let triangles = no_triangles.span()
+    # -1: geocore ear-clips each face (a wholly -1 face asks for it).
+    for at in 0..<triangles.length: triangles[at] = -1
+    var no_normals: Column[Float3]
+    var no_precise: Column[Vector3]
+    return try assembled(build.positions.take(), build.origin, build.offsets.share(), build.corners.share(), no_triangles, no_normals, no_precise)

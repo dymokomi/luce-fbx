@@ -1,0 +1,284 @@
+## Mesh geometries and their layer elements. A Geometry "Mesh" (FBX 7), or
+## an FBX 6 Model holding its own Vertices, has `Vertices` (f64 triples),
+## `PolygonVertexIndex` (each face's last index stored as ~index), an
+## optional `Edges` (polygon-vertex indices, one per edge) and layer
+## elements:
+##
+##     LayerElementUV: 0 {
+##         Name: "map1"
+##         MappingInformationType: "ByPolygonVertex"
+##         ReferenceInformationType: "IndexToDirect"
+##         UV: *... { a: ... }
+##         UVIndex: *... { a: ... }
+##     }
+##
+## Every array a load needs is planned here and decoded in one batch.
+
+## What a layer element holds.
+pub enum LayerKind as u8:
+    normal = 0
+    tangent = 1
+    binormal = 2
+    uv = 3
+    color = 4
+    material = 5
+    smoothing = 6
+    edge_crease = 7
+    vertex_crease = 8
+    hole = 9
+    visibility = 10
+
+## Which element each value belongs to (MappingInformationType).
+pub enum Mapping as u8:
+    polygon_vertex = 0
+    vertex = 1
+    polygon = 2
+    edge = 3
+    all_same = 4
+
+## One layer element of a geometry, its arrays decoded.
+pub struct Layer:
+    pub var kind: LayerKind
+    ## Its set: the element's index (LayerElementUV: 1 is the second set).
+    pub var set: i64
+    pub var mapping: Mapping
+    ## IndexToDirect (or FBX 6's Index): values through `index`.
+    pub var indexed: bool
+    ## Components per value: 3 for normals, 2 for UVs, 4 for colors, 1 else.
+    pub var width: usize
+    pub var name_node: u32
+    pub var values_node: u32
+    pub var index_node: u32
+    ## Decoded: `width` f32 per value (integers for materials and smoothing,
+    ## stored as their bits in `integers`).
+    pub var values: f32[]
+    pub var integers: i32[]
+    pub var index: i32[]
+
+    pub mutating func release():
+        if self.values.length > 0: free(self.values) in memory.heap
+        if self.integers.length > 0: free(self.integers) in memory.heap
+        if self.index.length > 0: free(self.index) in memory.heap
+        var none_f: f32[]
+        var none_i: i32[]
+        self.values = none_f
+        self.integers = none_i
+        self.index = none_i
+
+    ## How many values it has.
+    pub func value_count() -> usize:
+        if self.integers.length > 0: return self.integers.length
+        return self.values.length // self.width
+
+    ## The value element `element` (a polygon vertex, point, face or edge)
+    ## takes, through the index when there is one; out-of-range indices
+    ## clamp to the last value, as ufbx clamps them. None without values.
+    pub func value_of(element: usize) -> usize?:
+        let count = self.value_count()
+        if count == 0: return none
+        var value = element
+        if self.index.length > 0:
+            if element >= self.index.length: return count - 1
+            let indexed = self.index[element]
+            if indexed < 0: return count - 1
+            value = (usize)indexed
+        if value >= count: return count - 1
+        return value
+
+## One mesh geometry, its arrays decoded.
+pub struct MeshGeometry:
+    pub var object: u32
+    ## The document node holding its arrays.
+    pub var node: u32
+    pub var vertices: f64[]
+    ## PolygonVertexIndex as stored.
+    pub var indices: i32[]
+    pub var edges: i32[]
+    pub var layers: Growing[Layer]
+    ## Each face's first polygon vertex, and one past the last face's end;
+    ## faces of any size (topology.lucb).
+    pub var faces: Growing[i32]
+    ## Faces whose indices name points past the vertices: the geometry is
+    ## skipped.
+    pub var broken: bool
+    ## Faces of more than 256 corners and their triangles (big_faces.lucb).
+    pub var big_faces: Growing[BigFace]
+    pub var big_triangles: Growing[u32]
+
+    pub mutating func close():
+        if self.vertices.length > 0: free(self.vertices) in memory.heap
+        if self.indices.length > 0: free(self.indices) in memory.heap
+        if self.edges.length > 0: free(self.edges) in memory.heap
+        for index in 0..<self.layers.count: self.layers.items[index].release()
+        self.layers.close()
+        self.faces.close()
+        self.big_faces.close()
+        self.big_triangles.close()
+
+    pub func point_count() -> usize:
+        return self.vertices.length // 3
+
+    pub func face_count() -> usize:
+        return self.faces.count - 1 if self.faces.count > 0 else 0
+
+## The layer element kinds by node name, with their value and index arrays.
+func layer_kind(name: str) -> LayerKind?:
+    match name:
+        "LayerElementNormal": return LayerKind.normal
+        "LayerElementTangent": return LayerKind.tangent
+        "LayerElementBinormal": return LayerKind.binormal
+        "LayerElementUV": return LayerKind.uv
+        "LayerElementColor": return LayerKind.color
+        "LayerElementMaterial": return LayerKind.material
+        "LayerElementSmoothing": return LayerKind.smoothing
+        "LayerElementEdgeCrease": return LayerKind.edge_crease
+        "LayerElementVertexCrease": return LayerKind.vertex_crease
+        "LayerElementHole": return LayerKind.hole
+        "LayerElementVisibility": return LayerKind.visibility
+        _: return none
+
+## The names of a kind's values array and index array (FBX 6 and some
+## exporters spell the index without the plural's s).
+func array_names(kind: LayerKind) -> (str, str, str):
+    match kind:
+        .normal: return ("Normals", "NormalsIndex", "NormalIndex")
+        .tangent: return ("Tangents", "TangentsIndex", "TangentIndex")
+        .binormal: return ("Binormals", "BinormalsIndex", "BinormalIndex")
+        .uv: return ("UV", "UVIndex", "UVIndex")
+        .color: return ("Colors", "ColorIndex", "ColorsIndex")
+        .material: return ("Materials", "", "")
+        .smoothing: return ("Smoothing", "", "")
+        .edge_crease: return ("EdgeCrease", "", "")
+        .vertex_crease: return ("VertexCrease", "", "")
+        .hole: return ("Hole", "", "")
+        _: return ("Visibility", "", "")
+
+func width_of(kind: LayerKind) -> usize:
+    match kind:
+        .normal, .tangent, .binormal: return 3
+        .uv: return 2
+        .color: return 4
+        _: return 1
+
+## Whether a kind's values are integers (materials, smoothing groups, and
+## bool-like holes and visibility).
+func integral(kind: LayerKind) -> bool:
+    return kind == LayerKind.material or kind == LayerKind.smoothing or kind == LayerKind.hole or kind == LayerKind.visibility
+
+func mapping_of(text: str) -> Mapping?:
+    match text:
+        "ByPolygonVertex": return Mapping.polygon_vertex
+        "ByVertex", "ByVertice": return Mapping.vertex
+        "ByPolygon": return Mapping.polygon
+        "ByEdge": return Mapping.edge
+        "AllSame": return Mapping.all_same
+        _: return none
+
+## The array node of `parent` named `name`, when it has one.
+func array_node(document: const Document*, parent: u32, name: str) -> u32?:
+    if name.length == 0: return none
+    let node = document.child(parent, name) else return none
+    if document.array_count(node) == 0 and document.array_property(node) == none: return none
+    return node
+
+## Read `node`'s mesh arrays and layer elements (not decoded yet); none when
+## it has no Vertices or PolygonVertexIndex.
+func read_geometry(document: const Document*, object: u32, node: u32, warnings: Warnings*) -> MeshGeometry?!:
+    let vertices = array_node(document, node, "Vertices") else return none
+    let indices = array_node(document, node, "PolygonVertexIndex") else return none
+    discard(vertices)
+    discard(indices)
+    var geometry = MeshGeometry(object = object, node = node, vertices = empty_reals(), indices = empty_ints(), edges = empty_ints(), layers = Growing[Layer](), faces = Growing[i32](), broken = false, big_faces = Growing[BigFace](), big_triangles = Growing[u32]())
+    errdefer geometry.close()
+    var cursor = document.first_child(node)
+    while let child = cursor:
+        cursor = document.next_sibling(node, child)
+        let kind = layer_kind(document.name(child)) else continue
+        let names = array_names(kind)
+        let values = array_node(document, child, names.0) else continue
+        var mapping = Mapping.polygon_vertex
+        if let found = document.child(child, "MappingInformationType"):
+            let text = document.text(found, 0) else ""
+            mapping = mapping_of(text) else Mapping.polygon_vertex
+        var indexed = false
+        if let found = document.child(child, "ReferenceInformationType"):
+            let text = document.text(found, 0) else ""
+            indexed = text == "IndexToDirect" or text == "Index"
+        var index_node = absent
+        if indexed:
+            if let found = array_node(document, child, names.1): index_node = found
+            elif let found = array_node(document, child, names.2): index_node = found
+            else: indexed = false
+        var set: i64 = 0
+        if let first = document.property(child, 0):
+            set = scalar_integer(first) else 0
+        let name_node = document.child(child, "Name") else absent
+        try geometry.layers.push(Layer(kind = kind, set = set, mapping = mapping, indexed = indexed, width = width_of(kind), name_node = name_node, values_node = values, index_node = index_node, values = empty_floats(), integers = empty_ints(), index = empty_ints()))
+    return geometry
+
+## The arrays of `geometry` as decode jobs: vertices as f64, indices and
+## edges as i32 (edges only when a layer maps by edge), layer values as f32
+## (or i32), layer indices as i32. Each output is allocated here and owned
+## by the geometry.
+func plan_geometry(document: const Document*, geometry: MeshGeometry*, jobs: Growing[ArrayJob]*) -> !:
+    let node = geometry.node
+    let vertices = document.child(node, "Vertices") else return
+    let indices = document.child(node, "PolygonVertexIndex") else return
+    let vertex_count = document.array_count(vertices)
+    if vertex_count % 3 != 0: error(errors.invalid, "an FBX mesh's vertices are not triples")
+    geometry.vertices = try alloc f64[vertex_count] in memory.heap
+    try jobs.push(ArrayJob(vertices, Element.real64, bytes_of[f64](geometry.vertices)))
+    geometry.indices = try alloc i32[document.array_count(indices)] in memory.heap
+    try jobs.push(ArrayJob(indices, Element.int32, bytes_of[i32](geometry.indices)))
+    var by_edge = false
+    for layer in geometry.layers.view(): by_edge = by_edge or layer.mapping == Mapping.edge
+    if by_edge:
+        if let edges = document.child(node, "Edges"):
+            geometry.edges = try alloc i32[document.array_count(edges)] in memory.heap
+            try jobs.push(ArrayJob(edges, Element.int32, bytes_of[i32](geometry.edges)))
+    for index in 0..<geometry.layers.count:
+        let layer = &geometry.layers.items[index]
+        let count = document.array_count(layer.values_node)
+        if integral(layer.kind):
+            layer.integers = try alloc i32[count] in memory.heap
+            try jobs.push(ArrayJob(layer.values_node, Element.int32, bytes_of[i32](layer.integers)))
+        else:
+            # Values short of whole tuples lose the partial one.
+            let whole = count // layer.width * layer.width
+            layer.values = try alloc f32[whole] in memory.heap
+            if whole == count:
+                try jobs.push(ArrayJob(layer.values_node, Element.real32, bytes_of[f32](layer.values)))
+            elif whole > 0:
+                # Decoded separately below (the batch wants whole arrays).
+                let all = try document.decoded[f32](layer.values_node, Element.real32)
+                memory.copy(layer.values, all[..<whole], whole)
+                free(all) in memory.heap
+        if layer.index_node != absent:
+            layer.index = try alloc i32[document.array_count(layer.index_node)] in memory.heap
+            try jobs.push(ArrayJob(layer.index_node, Element.int32, bytes_of[i32](layer.index)))
+
+## After decoding: a layer mapped by polygon whose values (or indices) are
+## as many as the polygon vertices is by polygon vertex (old exporters
+## wrote it so; ufbx reads it so).
+func normalize_layers(geometry: MeshGeometry*):
+    for index in 0..<geometry.layers.count:
+        let layer = &geometry.layers.items[index]
+        if layer.mapping != Mapping.polygon: continue
+        let count = layer.index.length if layer.index.length > 0 else layer.value_count()
+        if count == geometry.indices.length and count != geometry.face_count(): layer.mapping = Mapping.polygon_vertex
+
+## A typed span's bytes.
+func bytes_of[T](values: T[]) -> u8[]:
+    return u8[]((u8*)values.data, values.length * sizeof(T))
+
+func empty_reals() -> f64[]:
+    var empty: f64[]
+    return empty
+
+func empty_floats() -> f32[]:
+    var empty: f32[]
+    return empty
+
+func empty_ints() -> i32[]:
+    var empty: i32[]
+    return empty

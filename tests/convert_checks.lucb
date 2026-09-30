@@ -1,0 +1,163 @@
+## The conversion to a GeometrySet (docs/MAPPING.md), against what ufbx
+## reads from the same files: counts, attribute sums, materials and paths;
+## instancing and Keep hierarchy; color sets, smoothing, creases, edge
+## visibility; Line and NURBS curves; units and axes.
+import memory
+import math
+from fbx_kernel import Document, ImportOptions, Warnings, import_document, read_file, invalid
+from geocore import Mesh
+from geocore_kernel import GeometrySet, Attribute, Domain, DataType, Instances, Curves, set_mesh, set_find, set_detail, instances_component, curves_type, dispose_set, attribute_entry, popcount
+
+## Import `path` with `options`; the caller disposes of the set.
+func imported(path: str, options: ImportOptions) -> GeometrySet*!:
+    let data = try read_file(path)
+    defer free(data) in memory.heap
+    var document = try Document.parse(data)
+    defer document.close()
+    var warnings = Warnings()
+    defer warnings.close()
+    return try import_document(&document, &options, &warnings)
+
+func mesh_of(set: const GeometrySet*) -> const Mesh*!:
+    return set_mesh(set) else error(invalid, "no mesh")
+
+## Attribute `name` on `domain` of `mesh`.
+func attribute_of(mesh: const Mesh*, name: str, domain: Domain) -> const Attribute*!:
+    let index = mesh.find_attribute(name, (i64)(u8)domain)
+    if index < 0: error(invalid, "a missing attribute")
+    return try attribute_entry(mesh, index)
+
+## Component `component` of every element of `attribute`, summed.
+func total(attribute: const Attribute*, component: usize) -> f64:
+    var sum: f64 = 0.0
+    for element in 0..<attribute.elements: sum += attribute.number(element, component)
+    return sum
+
+## Members of a group attribute.
+func members(attribute: const Attribute*) -> usize:
+    let bytes = attribute.data.view()
+    var count: usize = 0
+    for at in 0..<bytes.length // 8: count += (usize)popcount(memory.read[u64]((void*)&bytes[at * 8]))
+    return count
+
+## Detail attribute `name` of `set`.
+func detail(set: const GeometrySet*, name: str) -> const Attribute*!:
+    let store = set_detail(set)
+    let index = store.find(name, 3)
+    if index < 0: error(invalid, "a missing detail attribute")
+    return store.entry((usize)index)
+
+func near(value: f64, wanted: f64):
+    if math.abs(value - wanted) > 1.0e-4: print(f"convert: {value} is not {wanted}")
+    assert(math.abs(value - wanted) <= 1.0e-4)
+
+## Blender's default cube: 8 points, 6 quads, corner N, its material and
+## path; the details keep Y-up meters.
+pub func default_cube() -> !:
+    let set = try imported("tests/fixtures/blender_279_default_7400_binary.fbx", ImportOptions())
+    defer dispose_set(set)
+    let mesh = try mesh_of(set)
+    assert(mesh.point_count() == 8 and mesh.face_count() == 6)
+    let normals = try attribute_of(mesh, "N", Domain.corner)
+    assert(normals.elements == 24 and normals.width == 3)
+    let paths = try attribute_of(mesh, "path", Domain.face)
+    assert(paths.text_at(0) == "/Cube")
+    let materials = try attribute_of(mesh, "material", Domain.face)
+    assert(materials.text_at(5) == "Material")
+    let up = try detail(set, "fbx.upAxis")
+    assert(up.text_at(0) == "+Y")
+
+## Eight Suzannes sharing one mesh: one prototype and eight rows; merged
+## without instancing; eight rows with Keep hierarchy too.
+pub func instancing() -> !:
+    let path = "tests/fixtures/blender_293_instancing_7400_binary.fbx"
+    let shared = try imported(path, ImportOptions())
+    defer dispose_set(shared)
+    let rows = (const Instances*)(set_find(shared, instances_component()) else error(invalid, "no instances"))
+    assert(rows.count() == 8 and rows.prototype_count() == 1)
+    assert(set_mesh(shared) == none)
+    let merged = try imported(path, ImportOptions(instancing = false))
+    defer dispose_set(merged)
+    assert((try mesh_of(merged)).face_count() == 8 * 500)
+    let kept = try imported(path, ImportOptions(keep_hierarchy = true, instancing = false))
+    defer dispose_set(kept)
+    let kept_rows = (const Instances*)(set_find(kept, instances_component()) else error(invalid, "no instances"))
+    assert(kept_rows.count() == 8 and kept_rows.prototype_count() == 8)
+
+## Three color sets as Cd/Alpha, Cd2/Alpha2, Cd3/Alpha3 (ufbx's sums).
+pub func color_sets() -> !:
+    let set = try imported("tests/fixtures/blender_279_color_sets_7400_binary.fbx", ImportOptions())
+    defer dispose_set(set)
+    let mesh = try mesh_of(set)
+    let first = try attribute_of(mesh, "Cd", Domain.corner)
+    near(total(first, 0), 12.0)
+    let second = try attribute_of(mesh, "Cd2", Domain.corner)
+    near(total(second, 1), 24.0)
+    let alpha = try attribute_of(mesh, "Alpha3", Domain.corner)
+    near(total(alpha, 0), 24.0)
+
+## Smoothing, creases and edge visibility become their attributes.
+pub func edge_layers() -> !:
+    # Maya's cube: every edge hard (smoothing 0 by edge).
+    let smooth = try imported("tests/fixtures/maya_cube_7500_ascii.fbx", ImportOptions())
+    defer dispose_set(smooth)
+    let sharp = try attribute_of(try mesh_of(smooth), "sharp", Domain.edge)
+    assert(members(sharp) == 12)
+    let creased = try imported("tests/fixtures/blender_293x_subsurf_max_crease_7400_binary.fbx", ImportOptions())
+    defer dispose_set(creased)
+    let plane = try mesh_of(creased)
+    let crease = try attribute_of(plane, "crease", Domain.edge)
+    var largest: f64 = 0.0
+    for edge in 0..<crease.elements: largest = math.max(largest, crease.number(edge, 0))
+    near(largest, 10.0)
+    let visible = try imported("tests/fixtures/max_edge_visibility_7500_binary.fbx", ImportOptions())
+    defer dispose_set(visible)
+    let hidden = try attribute_of(try mesh_of(visible), "hidden", Domain.edge)
+    assert(members(hidden) > 0)
+
+## 3ds Max lines are poly curves (7 and 15 points); a rational NURBS curve
+## keeps its order, knots and weights.
+pub func curves() -> !:
+    let lines = try imported("tests/fixtures/max_curve_line_7500_ascii.fbx", ImportOptions())
+    defer dispose_set(lines)
+    let poly = (const Curves*)(set_find(lines, curves_type()) else error(invalid, "no curves"))
+    assert(poly.point_count() == 22)
+    let rational = try imported("tests/fixtures/max_nurbs_curve_rational_7500_ascii.fbx", ImportOptions())
+    defer dispose_set(rational)
+    let nurbs = (const Curves*)(set_find(rational, curves_type()) else error(invalid, "no curves"))
+    assert(nurbs.point_count() == 7 and nurbs.curve_count() == 1)
+    let store = nurbs.store()
+    let weights = store.find("w", 0)
+    assert(weights >= 0)
+    var weighted_one = true
+    for point in 0..<nurbs.point_count(): weighted_one = weighted_one and store.entry((usize)weights).number(point, 0) == 1.0
+    assert(not weighted_one)
+
+## Convert to Y-up meters: a Z-up, centimeter file turns and scales.
+pub func units() -> !:
+    let path = "tests/fixtures/max_edge_visibility_7500_binary.fbx"
+    let raw = try imported(path, ImportOptions())
+    defer dispose_set(raw)
+    let converted = try imported(path, ImportOptions(convert_units = true))
+    defer dispose_set(converted)
+    let a = try mesh_of(raw)
+    let b = try mesh_of(converted)
+    let scale = (try detail(raw, "fbx.metersPerUnit")).number(0, 0)
+    near(scale, 0.0254)
+    # +Z up becomes +Y up, -Y front becomes +Z front: (x, y, z) -> (x, z, -y).
+    let p = try a.point(0)
+    let q = try b.point(0)
+    near(q.x, p.x * scale)
+    near(q.y, p.z * scale)
+    near(q.z, -p.y * scale)
+    let up = try detail(converted, "fbx.upAxis")
+    assert(up.text_at(0) == "+Y")
+
+## Every check above, for allocation-failure injection.
+pub func all() -> !:
+    try default_cube()
+    try instancing()
+    try color_sets()
+    try edge_layers()
+    try curves()
+    try units()

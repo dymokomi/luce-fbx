@@ -1,0 +1,135 @@
+## Faces of more than 256 corners, which geocore cannot hold, become
+## triangles. Each is ear clipped once per geometry in the plane of its
+## Newell normal, the way geocore clips its own faces (polygon_triangulation),
+## falling back to a fan for what clipping cannot finish (a folded or
+## self-intersecting face). The triangles are corner positions within the
+## face; build.lucb writes them as faces of their own, reversed for a
+## mirrored use.
+
+## One big face of a geometry and where its triangles start in
+## `triangles` (3 local corners each, face size - 2 triangles).
+pub struct BigFace:
+    pub var face: usize
+    pub var first: usize
+
+## Triangulate every big face of `geometry` into its big-face table.
+func triangulate_big_faces(geometry: MeshGeometry*) -> !:
+    let starts = geometry.faces.view()
+    for face in 0..<geometry.face_count():
+        let size = (usize)(starts[face + 1] - starts[face])
+        if size <= most_corners: continue
+        let first = geometry.big_triangles.count
+        try geometry.big_faces.push(BigFace(face = face, first = first))
+        try geometry.big_triangles.extend(first + (size - 2) * 3, 0)
+        try clip_face(geometry, (usize)starts[face], size, geometry.big_triangles.items[first..<first + (size - 2) * 3])
+
+## The triangles of big face `face` (local corners, 3 each).
+func big_face_triangles(geometry: const MeshGeometry*, face: usize) -> const u32[]:
+    var low: usize = 0
+    var high = geometry.big_faces.count
+    while low < high:
+        let middle = (low + high) // 2
+        if geometry.big_faces.items[middle].face < face: low = middle + 1
+        else: high = middle
+    let first = geometry.big_faces.items[low].first
+    let size = (usize)(geometry.faces.items[face + 1] - geometry.faces.items[face])
+    return geometry.big_triangles.items[first..<first + (size - 2) * 3]
+
+## Ear clip the face of `size` corners at polygon vertex `start` into `out`.
+func clip_face(geometry: const MeshGeometry*, start: usize, size: usize, out: u32[]) -> !:
+    # The face's points, projected onto the plane of its Newell normal.
+    let flat = try alloc f64[size * 2] in memory.heap
+    defer free(flat) in memory.heap
+    let next = try alloc u32[size] in memory.heap
+    defer free(next) in memory.heap
+    let previous = try alloc u32[size] in memory.heap
+    defer free(previous) in memory.heap
+    var normal = Vector3()
+    for k in 0..<size:
+        let a = vertex_of(geometry, start + k)
+        let b = vertex_of(geometry, start + (k + 1) % size)
+        normal = Vector3(normal.x + (a.y - b.y) * (a.z + b.z), normal.y + (a.z - b.z) * (a.x + b.x), normal.z + (a.x - b.x) * (a.y + b.y))
+    var used: usize = 0
+    let length = normal.length()
+    if length > 0.0 and math.is_finite(length):
+        let n = normal.multiply_scalar(1.0 / length)
+        # Any unit vector across the normal, and the third axis.
+        let helper = Vector3(1.0, 0.0, 0.0) if math.abs(n.x) < 0.9 else Vector3(0.0, 1.0, 0.0)
+        let u = try n.cross(helper).normalized()
+        let v = n.cross(u)
+        for k in 0..<size:
+            let p = vertex_of(geometry, start + k)
+            flat[k * 2] = p.dot(u)
+            flat[k * 2 + 1] = p.dot(v)
+            next[k] = (u32)((k + 1) % size)
+            previous[k] = (u32)((k + size - 1) % size)
+        var remaining = size
+        var current: u32 = 0
+        var misses: usize = 0
+        # Strict ears first; when none is left, ears of zero area too
+        # (collinear runs); when none of those either, a fan of the rest.
+        var strict = true
+        while remaining > 3:
+            if misses >= remaining:
+                if not strict: break
+                strict = false
+                misses = 0
+            let a = previous[(usize)current]
+            let c = next[(usize)current]
+            if is_ear(flat, next, a, current, c, strict):
+                out[used] = a
+                out[used + 1] = current
+                out[used + 2] = c
+                used += 3
+                next[(usize)a] = c
+                previous[(usize)c] = a
+                remaining -= 1
+                misses = 0
+                strict = true
+            else:
+                misses += 1
+            current = c
+        # A fan over the ring that is left (three corners: one triangle).
+        let first = current
+        var at = next[(usize)first]
+        while used < out.length:
+            out[used] = first
+            out[used + 1] = at
+            out[used + 2] = next[(usize)at]
+            used += 3
+            at = next[(usize)at]
+        return
+    # No plane: a fan over the whole face.
+    var k: usize = 1
+    while used < out.length:
+        out[used] = 0
+        out[used + 1] = (u32)k
+        out[used + 2] = (u32)(k + 1)
+        used += 3
+        k += 1
+
+## Whether corner b (between a and c) is an ear: convex (or, not `strict`,
+## flat), and no other remaining corner inside triangle abc.
+func is_ear(flat: const f64[], next: const u32[], a: u32, b: u32, c: u32, strict: bool) -> bool:
+    let ax = flat[(usize)a * 2]
+    let ay = flat[(usize)a * 2 + 1]
+    let bx = flat[(usize)b * 2]
+    let by = flat[(usize)b * 2 + 1]
+    let cx = flat[(usize)c * 2]
+    let cy = flat[(usize)c * 2 + 1]
+    let area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+    if area < 0.0 or (strict and area == 0.0): return false
+    var at = next[(usize)c]
+    while at != a:
+        let px = flat[(usize)at * 2]
+        let py = flat[(usize)at * 2 + 1]
+        let d1 = (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+        let d2 = (cx - bx) * (py - by) - (cy - by) * (px - bx)
+        let d3 = (ax - cx) * (py - cy) - (ay - cy) * (px - cx)
+        if d1 >= 0.0 and d2 >= 0.0 and d3 >= 0.0: return false
+        at = next[(usize)at]
+    return true
+
+func vertex_of(geometry: const MeshGeometry*, vertex: usize) -> Vector3:
+    let point = (usize)point_at(geometry.indices, vertex)
+    return Vector3(geometry.vertices[point * 3], geometry.vertices[point * 3 + 1], geometry.vertices[point * 3 + 2])

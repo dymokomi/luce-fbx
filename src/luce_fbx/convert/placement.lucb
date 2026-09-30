@@ -1,0 +1,128 @@
+## Placing points and instances. Points are transformed in f64 and stored as
+## f32 measured from the mesh's origin (geocore's rule: the bounds center
+## when coordinates reach past 4096 or 8 times the model's size), in
+## parallel chunks. Instance rows are translation, XYZ rotation and scale
+## (geocore's convention: R = Rx Ry Rz); a matrix that is not one (a shear
+## from non-uniform scale under rotation) is not instanced but baked. The
+## unit and axis conversion is one more matrix in front of every world.
+
+struct PointChunk:
+    var source: usize
+    var first: usize
+    var end: usize
+
+struct Box:
+    var low: Vector3
+    var high: Vector3
+
+struct PointWork:
+    var geometries: const MeshGeometry[]
+    var sources: const Source[]
+    var chunks: const PointChunk[]
+    var boxes: Box[]
+    var out: Float3[]
+    var origin: Vector3
+
+## Place every source's points into `build.positions`.
+func place_points(build: MeshBuild*, geometries: const MeshGeometry[]) -> !:
+    var chunks = Growing[PointChunk]()
+    defer chunks.close()
+    for index in 0..<build.sources.count:
+        let count = geometries[build.sources.items[index].geometry].point_count()
+        var first: usize = 0
+        while first < count:
+            let end = first + grain if count - first > grain else count
+            try chunks.push(PointChunk(source = index, first = first, end = end))
+            first = end
+    var boxes = try Column[Box].allocate(chunks.count)
+    defer boxes.release()
+    build.positions = try Column[Float3].allocate(build.points)
+    var work = PointWork(geometries, build.sources.items[..<build.sources.count], chunks.items[..<chunks.count], boxes.span(), build.positions.span(), Vector3())
+    pool.run(chunks.count, bound_chunk, (void*)&work)
+    var low = Vector3(math.infinity, math.infinity, math.infinity)
+    var high = Vector3(-math.infinity, -math.infinity, -math.infinity)
+    for box in boxes.view():
+        low = Vector3(math.min(low.x, box.low.x), math.min(low.y, box.low.y), math.min(low.z, box.low.z))
+        high = Vector3(math.max(high.x, box.high.x), math.max(high.y, box.high.y), math.max(high.z, box.high.z))
+    build.origin = origin_for(low, high)
+    work.origin = build.origin
+    pool.run(chunks.count, place_chunk, (void*)&work)
+
+## A chunk's placed bounds.
+func bound_chunk(context: void*?, index: usize):
+    let work = (PointWork*)(context else return)
+    let chunk = work.chunks[index]
+    let source = &work.sources[chunk.source]
+    let vertices = work.geometries[source.geometry].vertices
+    let m = source.matrix
+    var low = Vector3(math.infinity, math.infinity, math.infinity)
+    var high = Vector3(-math.infinity, -math.infinity, -math.infinity)
+    for point in chunk.first..<chunk.end:
+        let p = m.transform_point(Vector3(vertices[point * 3], vertices[point * 3 + 1], vertices[point * 3 + 2]))
+        low = Vector3(math.min(low.x, p.x), math.min(low.y, p.y), math.min(low.z, p.z))
+        high = Vector3(math.max(high.x, p.x), math.max(high.y, p.y), math.max(high.z, p.z))
+    work.boxes[index] = Box(low, high)
+
+## geocore's origin rule: the bounds center when coordinates reach past
+## 4096 or past 8 times the model's size, else zero.
+func origin_for(low: Vector3, high: Vector3) -> Vector3:
+    if not (low.x <= high.x): return Vector3()
+    let reach = math.max(math.max(math.max(math.abs(low.x), math.abs(high.x)), math.max(math.abs(low.y), math.abs(high.y))), math.max(math.abs(low.z), math.abs(high.z)))
+    let span = math.max(math.max(high.x - low.x, high.y - low.y), high.z - low.z)
+    if reach > 4096.0 or reach > span * 8.0: return Vector3((low.x + high.x) * 0.5, (low.y + high.y) * 0.5, (low.z + high.z) * 0.5)
+    return Vector3()
+
+func place_chunk(context: void*?, index: usize):
+    let work = (PointWork*)(context else return)
+    let chunk = work.chunks[index]
+    let source = &work.sources[chunk.source]
+    let vertices = work.geometries[source.geometry].vertices
+    let m = source.matrix
+    # The translation less the origin, in f64, keeps far-off models precise.
+    let t = m.translation.subtract(work.origin)
+    let out = work.out[source.point_base..]
+    for point in chunk.first..<chunk.end:
+        let x = vertices[point * 3]
+        let y = vertices[point * 3 + 1]
+        let z = vertices[point * 3 + 2]
+        out[point] = Float3((f32)(x * m.x.x + y * m.y.x + z * m.z.x + t.x), (f32)(x * m.x.y + y * m.y.y + z * m.z.y + t.y), (f32)(x * m.x.z + y * m.y.z + z * m.z.z + t.z))
+
+## `matrix` as an instance row, or none when it shears.
+func placement_of(matrix: const Matrix4*) -> Placement?:
+    var columns: Vector3[3] = [matrix.x, matrix.y, matrix.z]
+    var scale: f64[3] = [columns[0].length(), columns[1].length(), columns[2].length()]
+    if matrix.determinant() < 0.0: scale[0] = -scale[0]
+    for k in 0..<(usize)3:
+        if scale[k] == 0.0: return none
+        columns[k] = columns[k].multiply_scalar(1.0 / scale[k])
+    let tolerance = 1.0e-6
+    if math.abs(columns[0].dot(columns[1])) > tolerance or math.abs(columns[0].dot(columns[2])) > tolerance or math.abs(columns[1].dot(columns[2])) > tolerance: return none
+    # R = Rx(a) Ry(b) Rz(c); the columns are R's.
+    let r02 = math.max(-1.0, math.min(1.0, columns[2].x))
+    let b = math.asin(r02)
+    var a: f64 = 0.0
+    var c: f64 = 0.0
+    if math.abs(r02) < 0.9999999:
+        a = math.atan2(-columns[2].y, columns[2].z)
+        c = math.atan2(-columns[1].x, columns[0].x)
+    else:
+        a = math.atan2(columns[1].z, columns[1].y)
+    return Placement.compose(matrix.translation, Vector3(a, b, c), Vector3(scale[0], scale[1], scale[2]))
+
+## The matrix taking the file's axes to Y-up right-handed (+X right, +Z
+## front) and its units to meters.
+func conversion(settings: const Settings*) -> Matrix4:
+    var columns: Vector3[3] = [Vector3(), Vector3(), Vector3()]
+    let targets: Vector3[3] = [Vector3(1.0, 0.0, 0.0), Vector3(0.0, 1.0, 0.0), Vector3(0.0, 0.0, 1.0)]
+    let axes: Axis[3] = [settings.right, settings.up, settings.front]
+    var used: bool[3] = [false, false, false]
+    for k in 0..<(usize)3:
+        let axis = axes[k]
+        if used[(usize)axis.index]: return scaling(settings.meters)
+        used[(usize)axis.index] = true
+        columns[(usize)axis.index] = targets[k].multiply_scalar(1.0 if axis.positive else -1.0)
+    let s = settings.meters
+    return Matrix4(columns[0].multiply_scalar(s), columns[1].multiply_scalar(s), columns[2].multiply_scalar(s), Vector3())
+
+func scaling(s: f64) -> Matrix4:
+    return Matrix4(Vector3(s, 0.0, 0.0), Vector3(0.0, s, 0.0), Vector3(0.0, 0.0, s), Vector3())

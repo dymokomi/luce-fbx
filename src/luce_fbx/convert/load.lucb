@@ -1,0 +1,279 @@
+## A whole FBX import: the scene's mesh geometries placed by their models
+## into one GeometrySet (docs/MAPPING.md). Every model placing a mesh is a
+## use of it. A use is merged into the mesh component (its points in world
+## space), unless it becomes an instance row: with Keep hierarchy every use
+## does, and with Instancing a geometry several models share does (when
+## their materials agree). A use whose matrix shears cannot be a row and is
+## merged. Each prototype is its geometry once, in its own space.
+
+## One model placing one mesh geometry.
+struct Use:
+    var model: u32
+    var geometry: usize
+    var matrix: Matrix4
+    var path: i32
+    var materials_first: usize
+    var materials_count: usize
+    ## Its prototype slot when instanced.
+    var prototype: usize
+    var instanced: bool
+
+## Everything an import gathers before building.
+struct Gathered:
+    var geometries: Growing[MeshGeometry]
+    var uses: Growing[Use]
+    var curves: Growing[CurveUse]
+    ## Each use's material names, as material table indices.
+    var materials: Growing[i32]
+    var paths: TableBuilder
+    var names: TableBuilder
+
+    func init():
+        self.geometries = Growing[MeshGeometry]()
+        self.uses = Growing[Use]()
+        self.curves = Growing[CurveUse]()
+        self.materials = Growing[i32]()
+        self.paths = TableBuilder()
+        self.names = TableBuilder()
+
+    mutating func close():
+        for index in 0..<self.geometries.count: self.geometries.items[index].close()
+        self.geometries.close()
+        self.uses.close()
+        for index in 0..<self.curves.count: self.curves.items[index].release()
+        self.curves.close()
+        self.materials.close()
+        self.paths.close()
+        self.names.close()
+
+## The set of `document`'s scene; what was left out goes to `warnings`.
+pub func import_document(document: const Document*, options: const ImportOptions*, warnings: Warnings*) -> GeometrySet*!:
+    var scene = try Scene.of(document)
+    defer scene.close()
+    var hierarchy = try scene.hierarchy()
+    defer hierarchy.close()
+    var gathered = Gathered()
+    defer gathered.close()
+    try gather(&scene, &hierarchy, options, &gathered, warnings)
+    var jobs = Growing[ArrayJob]()
+    defer jobs.close()
+    try gather_curves(&scene, &hierarchy, options, &gathered.paths, &gathered.curves, &jobs, warnings)
+    try decode(document, &gathered, &jobs)
+    try find_faces(gathered.geometries.items[..<gathered.geometries.count])
+    for index in 0..<gathered.geometries.count:
+        let geometry = &gathered.geometries.items[index]
+        if geometry.broken:
+            try warnings.add("Skipped meshes whose polygons name points they do not have")
+            continue
+        normalize_layers(geometry)
+        try triangulate_big_faces(geometry)
+    try decide_instances(&gathered, options)
+    let set = try empty_set()
+    errdefer dispose_set(set)
+    if let mesh = try merged_mesh(&gathered, options, warnings): try set_put(set, mesh_component(), (void*)mesh)
+    if let instances = try instance_rows(&gathered, options, warnings): try set_put(set, instances_component(), (void*)instances)
+    if let curves = try curves_of(gathered.curves.view(), &gathered.paths, warnings): try set_put(set, curves_type(), (void*)curves)
+    try put_details(set, &scene, options)
+    return set
+
+## Every model's mesh uses, their geometries read (not decoded), paths and
+## materials.
+func gather(scene: const Scene*, hierarchy: const Hierarchy*, options: const ImportOptions*, gathered: Gathered*, warnings: Warnings*) -> !:
+    let convert = conversion(&scene.settings) if options.convert_units else Matrix4()
+    var seen = Growing[u32]()
+    defer seen.close()
+    try seen.fill(scene.objects.count, absent)
+    for model in 1..<(u32)hierarchy.models.count:
+        let entry = &hierarchy.models.items[(usize)model]
+        let object = entry.object
+        let path = try gathered.paths.intern(hierarchy.path(model))
+        let materials_first = gathered.materials.count
+        for index in 0..<scene.child_count(object):
+            let connection = scene.child_connection(object, index)
+            if connection.property != absent or scene.kind(connection.child) != Kind.material: continue
+            try gathered.materials.push(try gathered.names.intern(scene.name(connection.child)))
+        let materials_count = gathered.materials.count - materials_first
+        # FBX 6 keeps the mesh in the Model; FBX 7 connects Geometry objects.
+        if scene.legacy and scene.document.child(entry_node(scene, object), "Vertices") != none:
+            try add_use(scene, gathered, &seen, object, model, &convert, entry, path, materials_first, materials_count, warnings)
+        for index in 0..<scene.child_count(object):
+            let connection = scene.child_connection(object, index)
+            if connection.property != absent: continue
+            let child = connection.child
+            if scene.kind(child) != Kind.geometry or scene.subclass(child) != "Mesh": continue
+            try add_use(scene, gathered, &seen, child, model, &convert, entry, path, materials_first, materials_count, warnings)
+
+func entry_node(scene: const Scene*, object: u32) -> u32:
+    return scene.objects.items[(usize)object].node
+
+func add_use(scene: const Scene*, gathered: Gathered*, seen: Growing[u32]*, object: u32, model: u32, convert: const Matrix4*, entry: const Model*, path: i32, materials_first: usize, materials_count: usize, warnings: Warnings*) -> !:
+    var slot = seen.items[(usize)object]
+    if slot == absent:
+        let geometry = try read_geometry(scene.document, object, entry_node(scene, object), warnings) else return
+        gathered.geometries.push(geometry) catch failure:
+            var owned = geometry
+            owned.close()
+            error(failure.code, failure.message)
+        slot = (u32)(gathered.geometries.count - 1)
+        seen.items[(usize)object] = slot
+    let matrix = convert.multiply(entry.geometry_world)
+    try gathered.uses.push(Use(model = model, geometry = (usize)slot, matrix = matrix, path = path, materials_first = materials_first, materials_count = materials_count, prototype = 0, instanced = false))
+
+## Decode every geometry's arrays, with the curves' `jobs`, in one batch.
+func decode(document: const Document*, gathered: Gathered*, jobs: Growing[ArrayJob]*) -> !:
+    for index in 0..<gathered.geometries.count:
+        try plan_geometry(document, &gathered.geometries.items[index], jobs)
+    try document.decode_arrays(jobs.view())
+
+## Which uses become instance rows, and their prototype slots: one per
+## geometry and material list.
+func decide_instances(gathered: Gathered*, options: const ImportOptions*) -> !:
+    var counts = Growing[usize]()
+    defer counts.close()
+    try counts.fill(gathered.geometries.count, 0)
+    for use in gathered.uses.view(): counts.items[use.geometry] += 1
+    var slots: usize = 0
+    for index in 0..<gathered.uses.count:
+        let use = &gathered.uses.items[index]
+        if gathered.geometries.items[use.geometry].broken: continue
+        let shared = options.instancing and counts.items[use.geometry] > 1
+        if not options.keep_hierarchy and not shared: continue
+        if placement_of(&use.matrix) == none: continue
+        # With instancing, the first earlier row of the same geometry and
+        # materials shares its prototype; without, each row has its own.
+        var slot = slots
+        for earlier in 0..<(index if options.instancing else 0):
+            let other = &gathered.uses.items[earlier]
+            if other.instanced and other.geometry == use.geometry and same_materials(gathered, other, use):
+                slot = other.prototype
+                break
+        if slot == slots: slots += 1
+        use.prototype = slot
+        use.instanced = true
+
+func same_materials(gathered: const Gathered*, a: const Use*, b: const Use*) -> bool:
+    if a.materials_count != b.materials_count: return false
+    for k in 0..<a.materials_count:
+        if gathered.materials.items[a.materials_first + k] != gathered.materials.items[b.materials_first + k]: return false
+    return true
+
+## The merged mesh of every use that is not an instance row, or none.
+func merged_mesh(gathered: const Gathered*, options: const ImportOptions*, warnings: Warnings*) -> Mesh*?!:
+    var build = MeshBuild()
+    defer build.close()
+    for use in gathered.uses.view():
+        if use.instanced or gathered.geometries.items[use.geometry].broken: continue
+        try build.sources.push(source_of(&use, use.matrix))
+    return try finish_mesh(&build, gathered, options, warnings)
+
+func source_of(use: const Use*, matrix: Matrix4) -> Source:
+    return Source(geometry = use.geometry, matrix = matrix, flip = matrix.determinant() < 0.0, path = use.path, materials_first = use.materials_first, materials_count = use.materials_count, point_base = 0, face_base = 0, corner_base = 0, face_end = 0)
+
+## Build, assemble and dress a mesh from `build`'s sources; none when they
+## have no faces.
+func finish_mesh(build: MeshBuild*, gathered: const Gathered*, options: const ImportOptions*, warnings: Warnings*) -> Mesh*?!:
+    if build.sources.count == 0: return none
+    let geometries = gathered.geometries.items[..<gathered.geometries.count]
+    try build_mesh(build, geometries, warnings)
+    if build.faces == 0: return none
+    let mesh = try assemble_mesh(build)
+    errdefer mesh_dispose(mesh)
+    try put_layer_attributes(mesh, build, geometries, options, warnings)
+    try put_face_texts(mesh, build, gathered)
+    return mesh
+
+## The instances component of every instanced use, or none.
+func instance_rows(gathered: const Gathered*, options: const ImportOptions*, warnings: Warnings*) -> Instances*?!:
+    var any = false
+    for use in gathered.uses.view(): any = any or use.instanced
+    if not any: return none
+    let instances = try new_instances()
+    errdefer close_instances(instances)
+    var made: usize = 0
+    for use in gathered.uses.view():
+        if not use.instanced: continue
+        if use.prototype == made:
+            # The first use of a slot makes its prototype: the geometry in its
+            # own space, with this use's path and materials.
+            var build = MeshBuild()
+            defer build.close()
+            try build.sources.push(source_of(&use, Matrix4()))
+            let set = try empty_set()
+            let made_mesh = finish_mesh(&build, gathered, options, warnings) catch failure:
+                dispose_set(set)
+                error(failure.code, failure.message)
+            if let mesh = made_mesh:
+                # set_put closes the mesh when it fails.
+                set_put(set, mesh_component(), (void*)mesh) catch failure:
+                    dispose_set(set)
+                    error(failure.code, failure.message)
+            discard(try instances.add_prototype(set))
+            made += 1
+        let placement = placement_of(&use.matrix) else continue
+        try instances.add_instance(use.prototype, &placement, true)
+    return instances
+
+func close_instances(instances: Instances*):
+    let close = instances_component().close
+    close((void*)instances)
+
+## The face text attributes: `path`, and `material` when any source has
+## materials.
+func put_face_texts(mesh: Mesh*, build: const MeshBuild*, gathered: const Gathered*) -> !:
+    var values = try Column[i32].allocate(build.faces)
+    defer values.release()
+    let out = values.span()
+    for source in build.sources.view():
+        for face in source.face_base..<source.face_end: out[face] = source.path
+    try put_text(mesh, "path", build.faces, &gathered.paths, out)
+    var any = false
+    for source in build.sources.view(): any = any or source.materials_count > 0
+    if not any: return
+    # Face material names: the model's n-th material for layer value n; an
+    # empty name ("") where there is none.
+    var names = TableBuilder()
+    defer names.close()
+    discard(try names.intern(""))
+    for source in build.sources.view():
+        let geometry = &gathered.geometries.items[source.geometry]
+        var layer: const Layer*? = none
+        for index in 0..<geometry.layers.count:
+            if geometry.layers.items[index].kind == LayerKind.material and layer == none: layer = &geometry.layers.items[index]
+        let face_source = build.face_source.view()
+        for face in source.face_base..<source.face_end:
+            var material: i64 = 0
+            if let found = layer:
+                var element: usize = 0
+                if found.mapping == Mapping.polygon: element = (usize)face_source[face]
+                material = (i64)found.integers[element] if element < found.integers.length else -1
+            var name: i32 = 0
+            if material >= 0 and (usize)material < source.materials_count:
+                name = try names.intern(gathered.names.text((usize)gathered.materials.items[source.materials_first + (usize)material]))
+            out[face] = name
+    try put_text(mesh, "material", build.faces, &names, out)
+
+func put_text(mesh: Mesh*, name: str, faces: usize, table: const TableBuilder*, values: const i32[]) -> !:
+    var column = try table.finish()
+    defer column.release()
+    try put_attribute(mesh, try Attribute.text(name, Domain.face, faces, column, values))
+
+## The set's detail attributes: the file's axes, units and frame rate (Y
+## and meters after a conversion).
+func put_details(set: GeometrySet*, scene: const Scene*, options: const ImportOptions*) -> !:
+    let settings = scene.settings
+    try put_detail_text(set, "fbx.upAxis", "+Y" if options.convert_units else settings.up.text())
+    try put_detail_text(set, "fbx.frontAxis", "+Z" if options.convert_units else settings.front.text())
+    try put_detail_number(set, "fbx.metersPerUnit", 1.0 if options.convert_units else settings.meters)
+    try put_detail_number(set, "fbx.frameRate", settings.frame_rate)
+
+func put_detail_text(set: GeometrySet*, name: str, text: str) -> !:
+    var table = TableBuilder()
+    defer table.close()
+    let value: i32[1] = [try table.intern(text)]
+    var column = try table.finish()
+    defer column.release()
+    try set_put_detail(set, try Attribute.text(name, Domain.detail, 1, column, value[..<1]))
+
+func put_detail_number(set: GeometrySet*, name: str, number: f64) -> !:
+    let value: f64[1] = [number]
+    try set_put_detail(set, try Attribute.from_numbers(name, Domain.detail, 1, value[..<1], false))

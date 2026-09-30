@@ -148,7 +148,11 @@ extend Document:
         var at: usize = 0
         while at < batch.pieces.length:
             let job = batch.pieces[at].job
-            let found = self.array_property(batch.jobs[job].node) else error(errors.invalid, "an FBX array lost its property")
+            let property = self.array_property(batch.jobs[job].node)
+            if property == none:
+                at += 1
+                continue
+            let found = property else return
             if found.kind != 'a':
                 at += 1
                 continue
@@ -306,11 +310,11 @@ func parse_numbers(text: const u8[], element: Element, out: u8[], count: usize) 
         if index >= count: error(errors.invalid, "an ASCII FBX array holds more values than it declares")
         let token = text[start..<at]
         if element == Element.real32 or element == Element.real64:
-            put_real(out, index, element, try parse_real(token))
+            put_real(out, index, element, parse_real(token))
         elif let integer = parse_integer(token):
             put_integer(out, index, element, integer)
         else:
-            put_real(out, index, element, try parse_real(token))
+            put_real(out, index, element, parse_real(token))
         index += 1
     if index != count: error(errors.invalid, "an ASCII FBX array holds fewer values than it declares")
 

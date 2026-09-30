@@ -7,6 +7,7 @@ import sync
 import geocore_parallel
 import document_checks
 import scene_checks
+import convert_checks
 
 ## Counts live blocks and fails the allocation after `remaining` more.
 struct Tracker: memory.Allocator:
@@ -84,5 +85,11 @@ pub func main(arguments: str[]) -> i32!:
     settle(&tracker, "legacy scenes")
     inject(&tracker, scene_checks.transforms, "transforms")
     inject(&tracker, scene_checks.legacy, "legacy scenes")
+    try convert_checks.all()
+    settle(&tracker, "conversion")
+    inject(&tracker, convert_checks.default_cube, "the default cube")
+    inject(&tracker, convert_checks.instancing, "instancing")
+    inject(&tracker, convert_checks.curves, "curves")
+    inject(&tracker, convert_checks.edge_layers, "edge layers")
     print("PASS luce-fbx Base checks")
     return 0

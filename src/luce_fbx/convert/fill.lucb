@@ -1,0 +1,146 @@
+## Filling one merged attribute from each source's layer, in parallel
+## chunks: every output element finds the layer element its mapping names
+## (the polygon vertex, its point, its face, or element 0 for all-same),
+## then the value through the layer's index when it has one. Out-of-range
+## indices leave the element zero, as ufbx clamps nothing but reads nothing
+## past the values.
+
+struct FillWork:
+    var geometry: const MeshGeometry*
+    var build: const MeshBuild*
+    var source: const Source*
+    var layer: const Layer*
+    var domain: Domain
+    ## Numbers: `components` of each value from component `first`, times
+    ## `scale`, `components` per output element.
+    var out: f32[]
+    var first: usize
+    var components: usize
+    var scale: f32
+    ## Integers: one i32 per element.
+    var integers: i32[]
+    ## Bits: set where the value is nonzero (`when_zero`: where it is zero).
+    var bits: u64[]
+    var when_zero: bool
+    ## Output chunks: faces, or points for the point domain.
+    var chunk: usize
+
+## Elements per fill chunk.
+let fill_grain: usize = 8192
+
+## A float attribute of `components` from the layers of a planned kind.
+func put_numbers(mesh: Mesh*, build: const MeshBuild*, geometries: const MeshGeometry[], plan: Planned, name: str, first: usize, components: usize, scale: f32) -> !:
+    # Nothing fails between here and put_attribute, which takes the
+    # attribute even when it fails.
+    var attribute = try Attribute.create(name, plan.domain, DataType.float32, components, element_count(build, plan.domain))
+    let out = f32[]((f32*)attribute.data.span().data, element_count(build, plan.domain) * components)
+    for at in 0..<out.length: out[at] = 0.0
+    var no_integers: i32[]
+    var no_bits: u64[]
+    for source in build.sources.view():
+        let geometry = &geometries[source.geometry]
+        let layer = layer_for(geometry, plan) else continue
+        if layer.width < first + components: continue
+        var work = FillWork(geometry, build, &source, layer, plan.domain, out, first, components, scale, no_integers, no_bits, false, 0)
+        run_fill(&work)
+    try put_attribute(mesh, attribute)
+
+## An int32 attribute of one component from the layers of a planned kind.
+func put_integers(mesh: Mesh*, build: const MeshBuild*, geometries: const MeshGeometry[], plan: Planned, name: str) -> !:
+    let count = element_count(build, plan.domain)
+    var attribute = try Attribute.create(name, plan.domain, DataType.int32, 1, count)
+    let out = i32[]((i32*)attribute.data.span().data, count)
+    for at in 0..<out.length: out[at] = 0
+    var no_floats: f32[]
+    var no_bits: u64[]
+    for source in build.sources.view():
+        let geometry = &geometries[source.geometry]
+        let layer = layer_for(geometry, plan) else continue
+        var work = FillWork(geometry, build, &source, layer, plan.domain, no_floats, 0, 1, 1.0, out, no_bits, false, 0)
+        run_fill(&work)
+    try put_attribute(mesh, attribute)
+
+## A face group of the faces whose layer value is nonzero.
+func put_face_group(mesh: Mesh*, build: const MeshBuild*, geometries: const MeshGeometry[], plan: Planned, name: str) -> !:
+    var attribute = try Attribute.group(name, Domain.face, build.faces)
+    let bytes = attribute.data.span()
+    let bits = u64[]((u64*)bytes.data, bytes.length // 8)
+    var no_floats: f32[]
+    var no_integers: i32[]
+    for source in build.sources.view():
+        let geometry = &geometries[source.geometry]
+        let layer = layer_for(geometry, plan) else continue
+        var work = FillWork(geometry, build, &source, layer, Domain.face, no_floats, 0, 1, 1.0, no_integers, bits, false, 0)
+        run_fill(&work)
+    try put_attribute(mesh, attribute)
+
+func element_count(build: const MeshBuild*, domain: Domain) -> usize:
+    match domain:
+        .point: return build.points
+        .corner: return build.corner_total
+        _: return build.faces
+
+## Fill `work`'s source into its output, in parallel chunks.
+func run_fill(work: FillWork*):
+    if work.domain == Domain.point:
+        let count = work.geometry.point_count()
+        pool.run((count + fill_grain - 1) // fill_grain, fill_points, (void*)work)
+        return
+    let faces = work.source.face_end - work.source.face_base
+    let chunks = (faces + fill_grain - 1) // fill_grain
+    if work.bits.length > 0:
+        # Neighbouring chunks may share a word of bits: one thread.
+        for index in 0..<chunks: fill_faces((void*)work, index)
+        return
+    pool.run(chunks, fill_faces, (void*)work)
+
+func fill_points(context: void*?, index: usize):
+    let work = (FillWork*)(context else return)
+    let count = work.geometry.point_count()
+    let first = index * fill_grain
+    let end = first + fill_grain if count - first > fill_grain else count
+    for point in first..<end:
+        write_value(work, work.source.point_base + point, point)
+
+## Chunk `index` of the source's merged faces: each face's value, or each
+## of its corners'.
+func fill_faces(context: void*?, index: usize):
+    let work = (FillWork*)(context else return)
+    let source = work.source
+    let face_source = work.build.face_source.view()
+    let offsets = work.build.offsets.view()
+    let corner_source = work.build.corner_source.view()
+    let indices = work.geometry.indices
+    let first = source.face_base + index * fill_grain
+    let end = first + fill_grain if source.face_end - first > fill_grain else source.face_end
+    let mapping = work.layer.mapping
+    for face in first..<end:
+        let from_face = (usize)face_source[face]
+        if work.domain == Domain.face:
+            write_value(work, face, from_face if mapping == Mapping.polygon else 0)
+            continue
+        for corner in (usize)offsets[face]..<(usize)offsets[face + 1]:
+            let vertex = (usize)corner_source[corner]
+            var element: usize = 0
+            match mapping:
+                .polygon_vertex: element = vertex
+                .vertex: element = (usize)point_at(indices, vertex)
+                .polygon: element = from_face
+                _: element = 0
+            write_value(work, corner, element)
+
+## Write the layer value of `element` (through its index) as output element
+## `at`.
+func write_value(work: FillWork*, at: usize, element: usize):
+    let layer = work.layer
+    let value = layer.value_of(element) else return
+    if work.bits.length > 0:
+        let set = (layer.integers[value] == 0) == work.when_zero
+        if set: work.bits[at // 64] = work.bits[at // 64] | ((u64)1 << (u64)(at % 64))
+        return
+    if work.integers.length > 0:
+        work.integers[at] = layer.integers[value]
+        return
+    let components = work.components
+    for k in 0..<components:
+        work.out[at * components + k] = layer.values[value * layer.width + work.first + k] * work.scale

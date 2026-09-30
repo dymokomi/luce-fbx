@@ -1,0 +1,59 @@
+## FBX scene to GeometrySet conversion, after docs/MAPPING.md. This
+## fragment holds the options and the warnings every other fragment shares:
+## geometry.lucb reads meshes and their layer elements, topology.lucb their
+## polygons, build.lucb merges them into one mesh, attributes.lucb fills
+## attributes from the layers, placement.lucb places points and instances,
+## and load.lucb runs the whole import.
+import math
+import memory
+import geocore_parallel as pool
+import luce_fbx.errors as errors
+import luce_fbx.budget as budget
+from luce_fbx.document import Document, Property, ArrayJob, Element, element_size, scalar_integer
+from luce_fbx.scene import Scene, Hierarchy, Kind, Model, Settings, Axis, absent
+from geocore import Vector3, Matrix4, Mesh
+from geocore_kernel import Float3, Attribute, AttributeStore, Domain, DataType, Role, TableBuilder, GeometrySet, Placement, assembled, put_attribute, mesh_dispose, set_put, set_put_detail, empty_set, dispose_set, mesh_component, Instances, new_instances, instances_component, corner_edge_span, Curves, curves_assembled, curves_type
+from geocore_growing import Growing
+from geocore_shared import Column
+
+## What a load does.
+pub struct ImportOptions:
+    ## Keep each model's geometry in its own space, placed by an instance
+    ## row ("Keep hierarchy"), instead of merging everything into one mesh.
+    pub var keep_hierarchy: bool = false
+    ## Load a geometry several models share once, as instances.
+    pub var instancing: bool = true
+    ## Turn the file's axes to Y-up and scale it to meters.
+    pub var convert_units: bool = false
+    ## Import the file's normals as `N` (off: geocore's face normals).
+    pub var normals: bool = true
+
+## Messages about what a load left out or changed, one line each, each once.
+pub struct Warnings:
+    pub var text: Growing[u8]
+
+    pub func init():
+        self.text = Growing[u8]()
+
+    pub mutating func close():
+        self.text.close()
+
+    ## Add `message` unless it is there already.
+    pub mutating func add(message: str) -> !:
+        let held = (str)self.text.view()
+        var start: usize = 0
+        while start < held.length:
+            var end = start
+            while end < held.length and held.bytes[end] != 10: end += 1
+            if (str)held.bytes[start..<end] == message: return
+            start = end + 1
+        for byte in message.bytes: try self.text.push(byte)
+        try self.text.push(10)
+
+    ## Add "<count><text>".
+    pub mutating func count(number: usize, text: str) -> !:
+        var line: u8[256] = ---
+        try self.add(try format(line, f"{number}{text}"))
+
+## Elements per parallel chunk.
+let grain: usize = 16384

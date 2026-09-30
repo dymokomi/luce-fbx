@@ -1,0 +1,82 @@
+## Each geometry's faces from PolygonVertexIndex: a face ends at a negative
+## index (the point is ~index), and a last face without one ends with the
+## array, as ufbx reads it. In two parallel passes over chunks of every
+## geometry's indices: count the face ends (and check every point index),
+## then write each face's first polygon vertex.
+
+struct IndexChunk:
+    var geometry: usize
+    var first: usize
+    var end: usize
+    ## Faces ending in the chunk, then where its first ending face goes.
+    var ends: usize
+    var face_base: usize
+    var bad: bool
+
+struct TopologyWork:
+    var geometries: MeshGeometry[]
+    var chunks: IndexChunk[]
+
+## Find every geometry's faces; a geometry naming points it does not have is
+## marked broken.
+func find_faces(geometries: MeshGeometry[]) -> !:
+    var chunks = Growing[IndexChunk]()
+    defer chunks.close()
+    for (index, geometry) in geometries.indexed():
+        var first: usize = 0
+        while first < geometry.indices.length:
+            let end = first + grain * 4 if geometry.indices.length - first > grain * 4 else geometry.indices.length
+            try chunks.push(IndexChunk(geometry = index, first = first, end = end, ends = 0, face_base = 0, bad = false))
+            first = end
+    var work = TopologyWork(geometries, chunks.items[..<chunks.count])
+    pool.run(chunks.count, count_ends, (void*)&work)
+    var at: usize = 0
+    while at < chunks.count:
+        let index = chunks.items[at].geometry
+        let geometry = &geometries[index]
+        var faces: usize = 0
+        var bad = false
+        while at < chunks.count and chunks.items[at].geometry == index:
+            chunks.items[at].face_base = faces
+            faces += chunks.items[at].ends
+            bad = bad or chunks.items[at].bad
+            at += 1
+        let unterminated = geometry.indices.length > 0 and geometry.indices[geometry.indices.length - 1] >= 0
+        if unterminated: faces += 1
+        geometry.broken = bad
+        try geometry.faces.fill(faces + 1, 0)
+        geometry.faces.items[faces] = (i32)geometry.indices.length
+    pool.run(chunks.count, write_starts, (void*)&work)
+
+## A chunk's face ends, and whether each index names a point.
+func count_ends(context: void*?, index: usize):
+    let work = (TopologyWork*)(context else return)
+    let chunk = &work.chunks[index]
+    let geometry = &work.geometries[chunk.geometry]
+    let points = (i64)geometry.point_count()
+    var ends: usize = 0
+    for at in chunk.first..<chunk.end:
+        let value = (i64)geometry.indices[at]
+        let point = -value - 1 if value < 0 else value
+        if point >= points: chunk.bad = true
+        if value < 0: ends += 1
+    chunk.ends = ends
+
+## Each face's first polygon vertex: the one after the previous face's end.
+func write_starts(context: void*?, index: usize):
+    let work = (TopologyWork*)(context else return)
+    let chunk = &work.chunks[index]
+    let geometry = &work.geometries[chunk.geometry]
+    let starts = geometry.faces.items
+    var face = chunk.face_base
+    for at in chunk.first..<chunk.end:
+        if geometry.indices[at] < 0:
+            # The next face starts after this end.
+            starts[face + 1] = (i32)(at + 1)
+            face += 1
+    # starts[0] is 0; the last entry was set to the array's length.
+
+## The point of polygon vertex `at`.
+func point_at(indices: const i32[], at: usize) -> i32:
+    let value = indices[at]
+    return -value - 1 if value < 0 else value
