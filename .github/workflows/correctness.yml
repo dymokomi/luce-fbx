@@ -36,3 +36,6 @@ jobs:
       - name: Native and C tests
         working-directory: luce-fbx
         run: ./test.sh --opt 2
+      - name: Memory safety instrumentation
+        working-directory: luce-fbx
+        run: python3 tests/sanitize.py
