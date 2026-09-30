@@ -12,7 +12,7 @@ def package "luce_fbx_bench" {
     }
     def dependency "luce-compress" {
         str owner = "dymokomi"
-        str version = "^0.3.0"
+        str version = "^0.3.1"
         str path = "../../luce-compress"
     }
     def dependency "luce-std" {

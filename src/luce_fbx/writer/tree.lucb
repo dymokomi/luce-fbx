@@ -7,7 +7,7 @@
 import math
 import memory
 import geocore_parallel as pool
-import flate
+import compress
 import luce_fbx.errors as errors
 import luce_fbx.source as source
 from luce_fbx.convert import Warnings, placement_of
@@ -42,6 +42,7 @@ struct Blob:
     var raw: u8[]
     var packed: u8[]
     var packed_length: usize
+    var failed: bool
 
     mutating func release():
         if self.raw.length > 0: free(self.raw) in memory.heap
@@ -135,7 +136,7 @@ pub struct Tree:
     ## An array property of `count` elements in `raw`, which the tree takes
     ## (and frees, even when this fails).
     pub mutating func array(kind: u8, count: usize, raw: u8[]) -> !:
-        var blob = Blob(kind = kind, count = count, raw = raw, packed = empty_bytes(), packed_length = 0)
+        var blob = Blob(kind = kind, count = count, raw = raw, packed = empty_bytes(), packed_length = 0, failed = false)
         self.blobs.push(blob) catch failure:
             blob.release()
             error(failure.code, failure.message)

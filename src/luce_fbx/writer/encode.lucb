@@ -10,9 +10,10 @@
 ##   FileId/CreationTime pair and footer id, padding to 16, the version,
 ##   120 zero bytes and the closing magic).
 ##
-## Arrays over 128 bytes are deflated first (zlib, encoding 1), in
-## independent 512 KiB pieces on the pool joined into one stream; smaller
-## ones are stored raw (encoding 0), as Blender does.
+## Arrays over 128 bytes are deflated first (zlib level 1, encoding 1), one
+## pool task each, a large one in 1 MiB segments on several threads (what
+## compress.compress does); smaller ones are stored raw (encoding 0), as
+## Blender does.
 
 let magic: u8[23] = [0x4b, 0x61, 0x79, 0x64, 0x61, 0x72, 0x61, 0x20, 0x46, 0x42, 0x58, 0x20, 0x42, 0x69, 0x6e, 0x61, 0x72, 0x79, 0x20, 0x20, 0x00, 0x1a, 0x00]
 pub let file_id: u8[16] = [0x28, 0xb3, 0x2a, 0xeb, 0xb6, 0x24, 0xcc, 0xc2, 0xbf, 0xc8, 0xb0, 0x2a, 0xa9, 0x2b, 0xfc, 0xf1]
@@ -22,9 +23,6 @@ let foot_magic: u8[16] = [0xf8, 0x5a, 0x8c, 0x6a, 0xde, 0xf5, 0xd9, 0x7e, 0xec, 
 
 ## Arrays of more bytes than this are deflated.
 let pack_above: usize = 128
-## Deflated in independent pieces of this many bytes, one pool task each,
-## joined into one zlib stream (as pigz does).
-let segment_bytes: usize = 524288
 
 ## What an encode does.
 struct Encoding:
@@ -33,83 +31,28 @@ struct Encoding:
     var version: u32
     var deflate: bool
 
-## One piece of an array being deflated: its bytes, where they go, and
-## their Adler-32.
-struct Segment:
-    var blob: usize
-    var start: usize
-    var end: usize
-    var out: u8[]
-    var used: usize
-    var adler: u32
-    var failed: bool
-
 struct PackWork:
     var blobs: Blob[]
-    var segments: Segment[]
 
-## Deflate one segment (flate level 1), the last of its array ending the
-## stream.
-func pack_segment(context: void*?, index: usize):
+## Deflate blob `index` (zlib level 1) when it is large enough;
+## compress.compress takes a large one in 1 MiB segments on several threads,
+## which compress.inflate reads back the same way.
+func pack_blob(context: void*?, index: usize):
     let work = (PackWork*)(context else return)
-    let segment = &work.segments[index]
-    let raw = work.blobs[segment.blob].raw[segment.start..<segment.end]
-    segment.out = alloc u8[flate.deflate_bound(raw.length)] in memory.heap catch failure:
+    let blob = &work.blobs[index]
+    if blob.raw.length <= pack_above: return
+    blob.packed = compress.compress(blob.raw, 1) catch failure:
         discard(failure)
-        segment.failed = true
+        blob.failed = true
         recover empty_bytes()
-    if segment.failed: return
-    segment.used = flate.deflate_raw(raw, 1, segment.out, segment.end == work.blobs[segment.blob].raw.length) catch failure:
-        discard(failure)
-        segment.failed = true
-        recover 0
-    segment.adler = flate.adler32(raw)
+    blob.packed_length = blob.packed.length
 
-## Deflate every array over `pack_above` bytes into its zlib stream.
+## Deflate every array over `pack_above` bytes, one pool task each.
 func pack_blobs(tree: Tree*) -> !:
-    var segments = Growing[Segment]()
-    defer:
-        for segment in segments.view():
-            if segment.out.length > 0: free(segment.out) in memory.heap
-        segments.close()
-    for index in 0..<tree.blobs.count:
-        let length = tree.blobs.items[index].raw.length
-        if length <= pack_above: continue
-        var start: usize = 0
-        while start < length:
-            let end = start + segment_bytes if length - start > segment_bytes else length
-            try segments.push(Segment(blob = index, start = start, end = end, out = empty_bytes(), used = 0, adler = 1, failed = false))
-            start = end
-    var work = PackWork(blobs = tree.blobs.items[..<tree.blobs.count], segments = segments.items[..<segments.count])
-    pool.run(segments.count, pack_segment, (void*)&work)
-    for segment in segments.view():
-        if segment.failed: error(memory.exhausted, "out of memory deflating an FBX array")
-    # Each array's pieces joined: header, segments, the combined Adler-32.
-    var at: usize = 0
-    while at < segments.count:
-        let blob = &tree.blobs.items[segments.items[at].blob]
-        var end = at
-        var total: usize = 6
-        while end < segments.count and segments.items[end].blob == segments.items[at].blob:
-            total += segments.items[end].used
-            end += 1
-        blob.packed = try alloc u8[total] in memory.heap
-        let header = flate.zlib_header(1)
-        blob.packed[0] = header[0]
-        blob.packed[1] = header[1]
-        var used: usize = 2
-        var adler: u32 = 1
-        for k in at..<end:
-            let segment = &segments.items[k]
-            memory.copy(blob.packed[used..], segment.out[..<segment.used], segment.used)
-            used += segment.used
-            adler = segment.adler if k == at else flate.adler32_combine(adler, segment.adler, segment.end - segment.start)
-        blob.packed[used] = (u8)(adler >> 24)
-        blob.packed[used + 1] = (u8)(adler >> 16)
-        blob.packed[used + 2] = (u8)(adler >> 8)
-        blob.packed[used + 3] = (u8)adler
-        blob.packed_length = used + 4
-        at = end
+    var work = PackWork(blobs = tree.blobs.items[..<tree.blobs.count])
+    pool.run(tree.blobs.count, pack_blob, (void*)&work)
+    for blob in tree.blobs.view():
+        if blob.failed: error(memory.exhausted, "out of memory deflating an FBX array")
 
 ## `version_prop` is the header's FBXVersion property, set to the version
 ## written.

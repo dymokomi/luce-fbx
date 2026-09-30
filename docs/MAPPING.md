@@ -132,8 +132,9 @@ right-handed and scaled to meters, and the details say +Y and 1.
 Blender's exporter writes it (header, FBXHeaderExtension with a fixed 1970
 timestamp so saves are reproducible, GlobalSettings, Documents, References,
 Definitions, Objects, Connections, Takes). Arrays over 128 bytes are
-deflated (zlib level 1) in independent 512 KiB pieces on the pool, joined
-into one stream per array; `deflate = false` stores them raw.
+deflated (zlib level 1) one pool task each, a large one by luce-compress in
+1 MiB segments on several threads (one stream, which luce-compress also
+inflates in parallel); `deflate = false` stores them raw.
 
 - **Meshes.** Faces are grouped by their `path` text. Each group is one
   Geometry and one Model at that path (its names split at `/`; missing
