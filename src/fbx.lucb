@@ -3,17 +3,17 @@
 ## Everything here is a thin entry point; the work is in document/, scene/,
 ## convert/ and writer/.
 import interop
-import math
+import luce_std.math
 import memory
-import luce_fbx.source as source
-import luce_fbx.convert as convert
-import luce_fbx.writer as writer
-import luce_fbx.errors as errors
-from luce_fbx.document import Document
-from luce_fbx.scene import Scene, Animation, absent
-from geocore import GeometrySet
-from geocore_kernel import adopt_set
-from geocore_growing import Growing
+import source
+import convert
+import writer
+import errors
+from document import Document
+from scene import Scene, Animation, absent
+from luce_geocore.geocore import GeometrySet
+from luce_geocore.kernel import adopt_set
+from luce_geocore.core.growing import Growing
 
 ## The last load's warnings on this thread, up to 4 KiB of whole lines.
 local var last_warnings: u8[4096]

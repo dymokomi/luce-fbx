@@ -4,10 +4,10 @@
 ## quaternion skinning. Each case checks its first mesh model's world matrix
 ## and the sum of its placed points.
 import memory
-import math
-from fbx_kernel import Document, Scene, Animation, ImportOptions, Warnings, import_document, read_file, invalid
-from geocore import Mesh, Vector3
-from geocore_kernel import GeometrySet, set_mesh, dispose_set
+import luce_std.math
+from luce_fbx.kernel import Document, Scene, Animation, ImportOptions, Warnings, import_document, read_file, invalid
+from luce_geocore.geocore import Mesh, Vector3
+from luce_geocore.kernel import GeometrySet, set_mesh, dispose_set
 
 struct Case:
     let path: str

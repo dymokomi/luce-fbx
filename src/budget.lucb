@@ -4,7 +4,7 @@
 ## load will hold is checked against the machine's physical memory, so a
 ## hostile header fails with a clear error instead of an allocation storm.
 import os
-import luce_fbx.errors as errors
+import errors
 
 extern func sysconf(option: i32) -> i64
 extern func getpagesize() -> i32

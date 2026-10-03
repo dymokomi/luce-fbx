@@ -10,13 +10,13 @@
 ## its children. The document borrows the file's bytes: names, strings and
 ## arrays point into them, so the bytes must outlive the document.
 import memory
-import math
+import luce_std.math
 import strings
-import geocore_parallel as pool
-import luce_fbx.errors as errors
-import luce_fbx.budget as budget
-import compress
-from geocore_growing import Growing
+import luce_geocore.core.parallel as pool
+import errors
+import budget
+import luce_compress.compress
+from luce_geocore.core.growing import Growing
 
 ## A property's kind is its FBX type code. Binary scalars: 'C' bool, 'Y'
 ## i16, 'I' i32, 'L' i64, 'F' f32, 'D' f64; 'S' text, 'R' raw bytes; arrays

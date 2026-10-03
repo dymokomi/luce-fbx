@@ -4,7 +4,7 @@
 ## memory.exhausted and leave nothing allocated.
 import memory
 import sync
-import geocore_parallel
+import luce_geocore.core.parallel as geocore_parallel
 import document_checks
 import scene_checks
 import convert_checks

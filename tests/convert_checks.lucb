@@ -3,10 +3,10 @@
 ## instancing and Keep hierarchy; color sets, smoothing, creases, edge
 ## visibility; Line and NURBS curves; units and axes.
 import memory
-import math
-from fbx_kernel import Document, ImportOptions, Warnings, import_document, read_file, invalid
-from geocore import Mesh
-from geocore_kernel import GeometrySet, Attribute, Domain, DataType, Instances, Curves, set_mesh, set_detail, instances_component, curves_type, dispose_set, popcount
+import luce_std.math
+from luce_fbx.kernel import Document, ImportOptions, Warnings, import_document, read_file, invalid
+from luce_geocore.geocore import Mesh
+from luce_geocore.kernel import GeometrySet, Attribute, Domain, DataType, Instances, Curves, set_mesh, set_detail, instances_component, curves_type, dispose_set, popcount
 
 ## Import `path` with `options`; the caller disposes of the set.
 func imported(path: str, options: ImportOptions) -> GeometrySet*!:

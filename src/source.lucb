@@ -4,10 +4,10 @@
 import c
 import memory
 import strings
-import utf8
-import files
-import luce_fbx.errors as errors
-import luce_fbx.budget as budget
+import luce_std.utf8
+import luce_std.files
+import errors
+import budget
 
 ## `path` as a NUL-terminated native string on memory.heap; release it with
 ## strings.release.

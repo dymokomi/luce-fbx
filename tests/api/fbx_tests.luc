@@ -2,9 +2,9 @@
 ## the generated 7.4/7.5 files with raw and zlib arrays, instancing and Keep
 ## hierarchy, unit conversion, damaged files failing cleanly, and saves read
 ## back (a 1000-corner n-gon, instances, 7500, raw arrays).
-from fbx import Fbx
-from geocore import invalid, Mesh, GeometrySet, Vector3
-import math
+from luce_fbx.fbx import Fbx
+from luce_geocore.geocore import invalid, Mesh, GeometrySet, Vector3
+import luce_std.math
 
 func near(a: float, b: float):
     if math.abs(a - b) >= 0.000001: print(f"near failed: actual={a}, expected={b}")

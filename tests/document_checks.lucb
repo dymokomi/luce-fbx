@@ -3,9 +3,9 @@
 ## encodings decodes to the same arrays; every truncation and a sweep of
 ## byte corruptions fail cleanly (an error, never a trap or a leak).
 import memory
-from fbx_kernel import Document, ArrayJob, Element, Scene, ImportOptions, Warnings, import_document, read_file, invalid
-from geocore_kernel import dispose_set
-from geocore_growing import Growing
+from luce_fbx.kernel import Document, ArrayJob, Element, Scene, ImportOptions, Warnings, import_document, read_file, invalid
+from luce_geocore.kernel import dispose_set
+from luce_geocore.core.growing import Growing
 
 ## The fixtures every check reads.
 let files: str[8] = [

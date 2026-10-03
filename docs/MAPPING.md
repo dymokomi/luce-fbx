@@ -1,8 +1,8 @@
 # FBX and GeometrySet
 
 How `Fbx.load` turns an FBX scene into a luce-geocore `GeometrySet` (the
-code is in `src/luce_fbx/convert/`), and how `Fbx.save` writes one back
-([Writing](#writing), `src/luce_fbx/writer/`).
+code is in `src/convert/`), and how `Fbx.save` writes one back
+([Writing](#writing), `src/writer/`).
 
 ## Models and meshes
 

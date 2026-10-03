@@ -4,7 +4,7 @@ FBX for Luce, in **Luce Base**: binary and ASCII FBX files read into
 luce-geocore `GeometrySet`s, and GeometrySets written as binary FBX.
 
 ```luce
-from fbx import Fbx
+from luce_fbx.fbx import Fbx
 
 let scene = Fbx.load("character.fbx")
 let merged = Fbx.load("city.fbx", instancing = false, convert_units = true)

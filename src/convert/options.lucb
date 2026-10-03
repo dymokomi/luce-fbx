@@ -4,17 +4,17 @@
 ## polygons, build.lucb merges them into one mesh, attributes.lucb fills
 ## attributes from the layers, placement.lucb places points and instances,
 ## and load.lucb runs the whole import.
-import math
+import luce_std.math
 import memory
-import geocore_parallel as pool
-import luce_fbx.errors as errors
-import luce_fbx.budget as budget
-from luce_fbx.document import Document, Property, ArrayJob, Element, element_size, scalar_integer
-from luce_fbx.scene import Scene, Hierarchy, Kind, Model, Settings, Axis, Animation, Trs, Quat, absent
-from geocore import Vector3, Matrix4, Mesh
-from geocore_kernel import Float3, Attribute, AttributeStore, Domain, DataType, Role, TableBuilder, GeometrySet, Placement, assembled, put_attribute, mesh_dispose, set_put_detail, empty_set, dispose_set, mesh_component, Instances, new_instances, instances_component, Curves, curves_assembled, curves_type
-from geocore_growing import Growing
-from geocore_shared import Column
+import luce_geocore.core.parallel as pool
+import errors
+import budget
+from document import Document, Property, ArrayJob, Element, element_size, scalar_integer
+from scene import Scene, Hierarchy, Kind, Model, Settings, Axis, Animation, Trs, Quat, absent
+from luce_geocore.geocore import Vector3, Matrix4, Mesh
+from luce_geocore.kernel import Float3, Attribute, AttributeStore, Domain, DataType, Role, TableBuilder, GeometrySet, Placement, assembled, put_attribute, mesh_dispose, set_put_detail, empty_set, dispose_set, mesh_component, Instances, new_instances, instances_component, Curves, curves_assembled, curves_type
+from luce_geocore.core.growing import Growing
+from luce_geocore.core.shared import Column
 
 ## What a load does.
 pub struct ImportOptions:

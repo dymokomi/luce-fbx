@@ -4,16 +4,16 @@
 ## the builder may rearrange (Definitions, counted last, goes before
 ## Objects). Arrays are blobs of raw little-endian values the encoder
 ## deflates in parallel. Every other fragment of the writer builds on this.
-import math
+import luce_std.math
 import memory
-import geocore_parallel as pool
-import compress
-import luce_fbx.errors as errors
-import luce_fbx.source as source
-from luce_fbx.convert import Warnings, placement_of
-from geocore import Vector3, Matrix4, Mesh
-from geocore_kernel import Float3, Attribute, AttributeStore, Domain, DataType, GeometrySet, Curves, CurveSettings, KnotMode, CurveType, Instances, Placement, set_detail, mesh_component, curves_type, instances_component, curves_origin
-from geocore_growing import Growing
+import luce_geocore.core.parallel as pool
+import luce_compress.compress
+import errors
+import source
+from convert import Warnings, placement_of
+from luce_geocore.geocore import Vector3, Matrix4, Mesh
+from luce_geocore.kernel import Float3, Attribute, AttributeStore, Domain, DataType, GeometrySet, Curves, CurveSettings, KnotMode, CurveType, Instances, Placement, set_detail, mesh_component, curves_type, instances_component, curves_origin
+from luce_geocore.core.growing import Growing
 
 ## One node: its name (in the tree's text), properties and subtree.
 struct WNode:

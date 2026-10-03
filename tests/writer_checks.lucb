@@ -2,10 +2,10 @@
 ## their meshes (points bit for bit), layers, materials, paths, curves,
 ## instance rows and settings; 7500 and raw arrays read the same.
 import memory
-import math
-from fbx_kernel import Document, ImportOptions, Warnings, import_document, read_file, ExportOptions, encode_set, invalid
-from geocore import Mesh, Vector3, Matrix4
-from geocore_kernel import GeometrySet, Attribute, Domain, DataType, Instances, Curves, set_mesh, set_detail, instances_component, curves_type, dispose_set
+import luce_std.math
+from luce_fbx.kernel import Document, ImportOptions, Warnings, import_document, read_file, ExportOptions, encode_set, invalid
+from luce_geocore.geocore import Mesh, Vector3, Matrix4
+from luce_geocore.kernel import GeometrySet, Attribute, Domain, DataType, Instances, Curves, set_mesh, set_detail, instances_component, curves_type, dispose_set
 
 ## A set read from bytes.
 func read_set(data: const u8[], options: ImportOptions) -> GeometrySet*!:

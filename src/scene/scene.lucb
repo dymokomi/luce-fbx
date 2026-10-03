@@ -7,12 +7,12 @@
 ## from a child object to a parent object, optionally naming a property of
 ## the parent (OP connections: animation, textures).
 import memory
-import math
-import luce_fbx.errors as errors
-import luce_fbx.document as document
-from luce_fbx.document import Document, Property, ArrayJob, Element, scalar_integer
-from geocore_growing import Growing
-from geocore import Vector3, Matrix4
+import luce_std.math
+import errors
+import document
+from document import Document, Property, ArrayJob, Element, scalar_integer
+from luce_geocore.core.growing import Growing
+from luce_geocore.geocore import Vector3, Matrix4
 
 ## What kind of object an Objects child is, by its node name.
 pub enum Kind as u8:

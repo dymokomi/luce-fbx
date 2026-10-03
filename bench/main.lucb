@@ -8,11 +8,11 @@
 import time
 import memory
 import interop
-import geocore
-from geocore import Vector3, Mesh, GeometrySet
-from geocore_kernel import save_geometry, load_geometry, adopt_set, set_mesh, dispose_set
-from geocore_growing import Growing
-from fbx_kernel import Document, ImportOptions, ExportOptions, Warnings, import_document, encode_set, read_file
+import luce_geocore.geocore
+from luce_geocore.geocore import Vector3, Mesh, GeometrySet
+from luce_geocore.kernel import save_geometry, load_geometry, adopt_set, set_mesh, dispose_set
+from luce_geocore.core.growing import Growing
+from luce_fbx.kernel import Document, ImportOptions, ExportOptions, Warnings, import_document, encode_set, read_file
 from io import path
 
 func row(name: str, started: u64, count: usize):
