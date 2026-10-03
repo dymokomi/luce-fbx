@@ -11,9 +11,9 @@
 ## writer, at 7400 or 7500, its arrays deflated or (--raw) not.
 import c
 import memory
-import luce_geocore.core.parallel as pool
+from luce_geocore.core import parallel as pool
 from luce_fbx.kernel import Document, Scene, Hierarchy, Kind, Animation, ImportOptions, Warnings, import_document, read_file, write_file, ExportOptions, encode_set
-import luce_std.math
+from luce_std import math
 import strings
 from luce_geocore.geocore import Matrix4, Vector3, Mesh
 from luce_geocore.kernel import GeometrySet, Attribute, Domain, DataType, Float3, Curves, set_mesh, curves_type, dispose_set

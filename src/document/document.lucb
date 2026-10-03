@@ -10,12 +10,12 @@
 ## its children. The document borrows the file's bytes: names, strings and
 ## arrays point into them, so the bytes must outlive the document.
 import memory
-import luce_std.math
+from luce_std import math
 import strings
-import luce_geocore.core.parallel as pool
+from luce_geocore.core import parallel as pool
 import errors
 import budget
-import luce_compress.compress
+from luce_compress import compress
 from luce_geocore.core.growing import Growing
 
 ## A property's kind is its FBX type code. Binary scalars: 'C' bool, 'Y'

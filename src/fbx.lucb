@@ -3,7 +3,7 @@
 ## Everything here is a thin entry point; the work is in document/, scene/,
 ## convert/ and writer/.
 import interop
-import luce_std.math
+from luce_std import math
 import memory
 import source
 import convert

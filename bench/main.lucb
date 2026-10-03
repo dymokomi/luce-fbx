@@ -8,7 +8,7 @@
 import time
 import memory
 import interop
-import luce_geocore.geocore
+from luce_geocore import geocore
 from luce_geocore.geocore import Vector3, Mesh, GeometrySet
 from luce_geocore.kernel import save_geometry, load_geometry, adopt_set, set_mesh, dispose_set
 from luce_geocore.core.growing import Growing

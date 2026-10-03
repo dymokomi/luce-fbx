@@ -7,7 +7,7 @@
 ## from a child object to a parent object, optionally naming a property of
 ## the parent (OP connections: animation, textures).
 import memory
-import luce_std.math
+from luce_std import math
 import errors
 import document
 from document import Document, Property, ArrayJob, Element, scalar_integer

@@ -4,9 +4,9 @@
 ## polygons, build.lucb merges them into one mesh, attributes.lucb fills
 ## attributes from the layers, placement.lucb places points and instances,
 ## and load.lucb runs the whole import.
-import luce_std.math
+from luce_std import math
 import memory
-import luce_geocore.core.parallel as pool
+from luce_geocore.core import parallel as pool
 import errors
 import budget
 from document import Document, Property, ArrayJob, Element, element_size, scalar_integer
