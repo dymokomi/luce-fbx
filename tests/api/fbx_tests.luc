@@ -29,7 +29,7 @@ pub func fbx_tests() -> unit!:
     assert(converted.detail_value("fbx.metersPerUnit") == 1.0)
     for name in ["bad_offset", "truncated"]:
         var failed = false
-        discard(Fbx.load(f"tests/fixtures/generated_{name}.fbx")) catch failure:
+        _ = Fbx.load(f"tests/fixtures/generated_{name}.fbx") catch failure:
             failed = true
         assert(failed)
     # Dual quaternion skinning animated: the mesh moves with the frame.
@@ -38,7 +38,7 @@ pub func fbx_tests() -> unit!:
     assert(early.point_count() == late.point_count() and early.point(0).x != late.point(0).x)
     let info = Fbx.info("tests/fixtures/maya_dq_weights_7500_binary.fbx")
     assert(info.contains("frameRate: 24") and info.contains("Deformer: ") and info.contains("animation: "))
-    discard(Fbx.warnings())
+    _ = Fbx.warnings()
     save_tests()
     print("PASS Fbx.load, info and save: binary and ASCII scenes, instancing, units, animation and skins at a time, damaged files, saves read back")
 
