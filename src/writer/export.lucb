@@ -96,7 +96,7 @@ pub struct Export:
         self.materials = Growing[(usize, usize, i64)]()
         self.geometry_count = 0
 
-    pub mutating func close():
+    pub func close():
         self.tree.close()
         self.links.close()
         self.models.close()
@@ -108,11 +108,11 @@ pub struct Export:
         self.material_names.close()
         self.materials.close()
 
-    mutating func new_id() -> i64:
+    func new_id() -> i64:
         self.next_id += 1
         return self.next_id
 
-    mutating func link(child: i64, parent: i64) -> !:
+    func link(child: i64, parent: i64) -> !:
         try self.links.push(Link(child = child, parent = parent))
 
     func model_name(index: usize) -> str:
@@ -120,7 +120,7 @@ pub struct Export:
         return (str)self.names.items[model.name_start..<model.name_start + model.name_length]
 
     ## The id of material `name` (written with the models, write_objects).
-    mutating func material(name: str) -> i64!:
+    func material(name: str) -> i64!:
         for entry in self.materials.view():
             if (str)self.material_names.items[entry.0..<entry.0 + entry.1] == name: return entry.2
         let id = self.new_id()
@@ -130,7 +130,7 @@ pub struct Export:
         return id
 
     ## Every material as a Material object: its name and a grey diffuse.
-    mutating func write_materials() -> !:
+    func write_materials() -> !:
         let tree = &self.tree
         for entry in self.materials.view():
             try tree.begin("Material")
@@ -148,7 +148,7 @@ pub struct Export:
     # -- Models by path.
 
     ## The child of `parent` named `name`, made (a Null) when missing.
-    mutating func child_model(parent: i32, name: str) -> usize!:
+    func child_model(parent: i32, name: str) -> usize!:
         if self.lookup.count < self.models.count * 2 + 16: try self.rehash()
         let mask = self.lookup.count - 1
         var slot = name_hash(parent, name) & mask
@@ -162,7 +162,7 @@ pub struct Export:
         return index
 
     ## A new model (not looked up by name: instance rows).
-    mutating func add_model(parent: i32, name: str, kind: u8) -> usize!:
+    func add_model(parent: i32, name: str, kind: u8) -> usize!:
         let start = self.names.count
         for byte in name.bytes: try self.names.push(byte)
         try self.models.push(ModelOut(id = self.new_id(), parent = parent, name_start = start, name_length = name.length, kind = kind, translation = Vector3(), rotation = Vector3(), scale = Vector3(1.0, 1.0, 1.0), visible = true, named = false, world = self.world_of(parent)))
@@ -173,7 +173,7 @@ pub struct Export:
         return Matrix4() if index < 0 else self.models.items[(usize)index].world
 
     ## The model named `name` under `parent`, if there is one.
-    mutating func find_named(parent: i32, name: str) -> usize?!:
+    func find_named(parent: i32, name: str) -> usize?!:
         if self.lookup.count < self.models.count * 2 + 16: try self.rehash()
         let mask = self.lookup.count - 1
         var slot = name_hash(parent, name) & mask
@@ -184,11 +184,11 @@ pub struct Export:
         return none
 
     ## Make model `index` found by its parent and name from now on.
-    mutating func name_model(index: usize) -> !:
+    func name_model(index: usize) -> !:
         self.models.items[index].named = true
         try self.rehash()
 
-    mutating func rehash() -> !:
+    func rehash() -> !:
         var size: usize = 64
         while size < self.models.count * 4 + 32: size *= 2
         try self.lookup.fill(size, -1)
@@ -202,7 +202,7 @@ pub struct Export:
 
     ## The model at `path` ("/A/B", names split at '/') under `parent`,
     ## `fallback` for a path with no names.
-    mutating func model_at(parent: i32, path: str, fallback: str) -> usize!:
+    func model_at(parent: i32, path: str, fallback: str) -> usize!:
         var at = parent
         var start: usize = 0
         var named = false

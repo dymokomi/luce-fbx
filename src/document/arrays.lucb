@@ -78,9 +78,9 @@ extend Document:
     ## arrays: settings, matrices, keys); the caller frees it.
     pub func decoded[T](node: u32, element: Element) -> T[]!:
         let count = self.array_count(node)
-        let out = try alloc T[count] in memory.heap
+        let out = try new T[count] --- in memory.heap
         errdefer free(out) in memory.heap
-        let bytes = u8[]((u8*)out.data, count * sizeof(T))
+        let bytes = u8[]((u8*)out.data, count * memory.size_of(T))
         let jobs: ArrayJob[1] = [ArrayJob(node, element, bytes)]
         try self.decode_arrays(jobs[..<1])
         return out
@@ -235,7 +235,7 @@ func decode_one(batch: const Batch*, piece: Piece) -> !:
         return
     # Through scratch: a zlib array of another type, or a big-endian array
     # (its elements swapped first).
-    let scratch = try alloc u8[piece.count * source_size] in memory.heap
+    let scratch = try new u8[piece.count * source_size] --- in memory.heap
     defer free(scratch) in memory.heap
     if found.encoding == Encoding.raw:
         memory.copy(scratch, document.data[found.offset + piece.start * source_size..], scratch.length)

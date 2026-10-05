@@ -14,6 +14,7 @@ from scene import Scene, Animation, absent
 from luce_geocore.geocore import GeometrySet
 from luce_geocore.kernel import adopt_set
 from luce_geocore.core.growing import Growing
+import strings
 
 ## The last load's warnings on this thread, up to 4 KiB of whole lines.
 local var last_warnings: u8[4096]
@@ -33,7 +34,7 @@ pub struct Fbx:
     ## there; without either the file's values are read as they are.
     ## `deform` applies blend shapes and skins. What was left out is in
     ## `warnings()`.
-    pub static func load(path: str, keep_hierarchy: bool = false, instancing: bool = true, convert_units: bool = false, normals: bool = true, time: f64 = math.nan, frame: f64 = math.nan, deform: bool = true) -> interop.Reference[GeometrySet]!:
+    pub func load(path: str, keep_hierarchy: bool = false, instancing: bool = true, convert_units: bool = false, normals: bool = true, time: f64 = math.nan, frame: f64 = math.nan, deform: bool = true) -> interop.Reference[GeometrySet]!:
         let data = try source.read(path)
         defer free(data) in memory.heap
         var document = try Document.parse(data)
@@ -49,7 +50,7 @@ pub struct Fbx:
     ## version 7400, or 7500 when asked (0 picks 7500 only when the file
     ## needs 64-bit offsets); `deflate` compresses arrays over 128 bytes.
     ## What was left out is in `warnings()`.
-    pub static func save(set: interop.Reference[GeometrySet], path: str, version: i64 = 0, deflate: bool = true) -> !:
+    pub func save(set: interop.Reference[GeometrySet], path: str, version: i64 = 0, deflate: bool = true) -> !:
         if version != 0 and version != 7400 and version != 7500: error(errors.unsupported, "FBX writing supports versions 7400 and 7500")
         var warnings = convert.Warnings()
         defer warnings.close()
@@ -63,7 +64,7 @@ pub struct Fbx:
     ## version, encoding, creator, up axis, meters per unit, frame rate, the
     ## first animation stack's time span (seconds, and frames), and object
     ## counts by class.
-    pub static func info(path: str) -> interop.Owned[str]!:
+    pub func info(path: str) -> interop.Owned[str]!:
         let data = try source.read(path)
         defer free(data) in memory.heap
         var document = try Document.parse(data)
@@ -78,18 +79,18 @@ pub struct Fbx:
         return try interop.copy_text((str)out.view())
 
     ## The warnings of this thread's last load, one per line.
-    pub static func warnings() -> interop.Owned[str]!:
+    pub func warnings() -> interop.Owned[str]!:
         return try interop.copy_text((str)last_warnings[..<last_length])
 
 ## `Fbx.info`'s lines.
 func describe(document: const Document*, scene: const Scene*, animation: const Animation*, out: Growing[u8]*) -> !:
     let s = scene.settings
     var line: u8[512] = ---
-    try append(out, try format(line, f"version: {document.version}\n"))
+    try append(out, try strings.format(line, f"version: {document.version}\n"))
     try append(out, "encoding: binary\n" if document.binary else "encoding: ascii\n")
-    try append(out, try format(line, f"upAxis: {s.up.text()}\nfrontAxis: {s.front.text()}\nmetersPerUnit: {s.meters}\nframeRate: {s.frame_rate}\n"))
+    try append(out, try strings.format(line, f"upAxis: {s.up.text()}\nfrontAxis: {s.front.text()}\nmetersPerUnit: {s.meters}\nframeRate: {s.frame_rate}\n"))
     if animation.stack != absent:
-        try append(out, try format(line, f"animation: {scene.name(animation.stack)}\nstart: {animation.start}\nstop: {animation.stop}\nstartFrame: {animation.start * s.frame_rate}\nstopFrame: {animation.stop * s.frame_rate}\n"))
+        try append(out, try strings.format(line, f"animation: {scene.name(animation.stack)}\nstart: {animation.start}\nstop: {animation.stop}\nstartFrame: {animation.start * s.frame_rate}\nstopFrame: {animation.stop * s.frame_rate}\n"))
     # Objects by class, in first-seen order.
     var classes = Growing[u32]()
     defer classes.close()
@@ -101,7 +102,7 @@ func describe(document: const Document*, scene: const Scene*, animation: const A
         var count: usize = 0
         for object in 1..<(u32)scene.objects.count:
             if scene.class(object) == scene.class(first): count += 1
-        try append(out, try format(line, f"{scene.class(first)}: {count}\n"))
+        try append(out, try strings.format(line, f"{scene.class(first)}: {count}\n"))
 
 func append(out: Growing[u8]*, text: str) -> !:
     for byte in text.bytes: try out.push(byte)

@@ -73,7 +73,7 @@ func same_meshes(a: const Mesh*, b: const Mesh*, names: const str[]) -> !:
                     .edge:
                         ex = (usize)ea[corner]
                         ey = (usize)eb[corner]
-                    _: discard(0)
+                    _: _ = 0
                 for k in 0..<x.width:
                     if x.kind == DataType.text: assert(x.text_at(ex) == y.text_at(ey))
                     elif math.abs(x.number(ex, k) - y.number(ey, k)) > 1.0e-6:

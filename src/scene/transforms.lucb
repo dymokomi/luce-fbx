@@ -11,6 +11,8 @@
 ## child inherits apart. The geometric transform (GeometricTranslation,
 ## -Rotation, -Scaling) applies to the model's own geometry only.
 
+import strings
+
 ## How a model inherits its parent's transform (ufbx's inherit modes, and
 ## their numbers).
 pub enum Inherit as u8:
@@ -65,7 +67,7 @@ pub struct Hierarchy:
     pub var order: Growing[u32]
     pub var paths: Growing[u8]
 
-    pub mutating func close():
+    pub func close():
         self.models.close()
         self.model_of.close()
         self.order.close()
@@ -109,7 +111,7 @@ extend Scene:
                     if parent != (u32)model:
                         result.models.items[model].parent = parent
                         break
-        try self.order_models(&result)
+        try Scene.order_models(&result)
         try self.name_paths(&result)
         for model in result.order.view():
             var inputs = self.transform_inputs(result.models.items[(usize)model].object)
@@ -206,7 +208,7 @@ extend Scene:
             let repeat = ordinal.items[(usize)model]
             if repeat > 0:
                 var digits: u8[12] = ---
-                let text = try format(digits, f"_{repeat + 1}")
+                let text = try strings.format(digits, f"_{repeat + 1}")
                 for byte in text.bytes: try result.paths.push(byte)
             result.models.items[(usize)model].path_at = (u32)start
             result.models.items[(usize)model].path_length = (u32)(result.paths.count - start)
@@ -300,4 +302,3 @@ func sibling_order(keys: const SiblingKeys*, a: u32, b: u32) -> i64:
     let order = compare_bytes(keys.scene.name(x.object).bytes, keys.scene.name(y.object).bytes)
     if order != 0: return order
     return (i64)a - (i64)b
-

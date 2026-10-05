@@ -67,7 +67,7 @@ pub struct Document:
     pub var properties: Growing[Property]
 
     ## Parse `data`, binary or ASCII, into the node tree.
-    pub static func parse(data: const u8[]) -> Document!:
+    pub func parse(data: const u8[]) -> Document!:
         var document = Document(data, 0, false, false, Growing[Node](), Growing[Property]())
         errdefer document.close()
         if is_binary(data):
@@ -76,7 +76,7 @@ pub struct Document:
             try document.parse_ascii()
         return document
 
-    pub mutating func close():
+    pub func close():
         self.nodes.close()
         self.properties.close()
 
@@ -156,7 +156,7 @@ pub struct Document:
         if found.kind != 'S' and found.kind != 'R': error(errors.invalid, "an FBX value is not a string")
         let bytes = self.data[found.offset..<found.offset + found.size]
         return str(bytes) catch failure:
-            discard(failure)
+            _ = failure
             error(errors.invalid, "an FBX string is not UTF-8")
 
     ## The integer value of the first child of `parent` named `name`, or

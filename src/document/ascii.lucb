@@ -20,7 +20,7 @@
 let most_scalars: usize = 16
 
 extend Document:
-    mutating func parse_ascii() -> !:
+    func parse_ascii() -> !:
         self.binary = false
         var text = Scanner(self.data, 0)
         # A UTF-8 byte order mark.
@@ -59,7 +59,7 @@ extend Document:
 
     ## The value list after `Name:`, up to (not including) a `{` or the
     ## next node.
-    mutating func read_values(text: Scanner*) -> !:
+    func read_values(text: Scanner*) -> !:
         let first = self.properties.count
         var numbers_only = true
         while true:
@@ -122,7 +122,7 @@ extend Document:
                 found.integer = parse_integer(token) else (i64)real
 
     ## An array value after its `*`: `N { a: v, v, ... }`.
-    mutating func read_array(text: Scanner*) -> !:
+    func read_array(text: Scanner*) -> !:
         let start = text.at
         text.skip_number()
         let count = parse_integer(self.data[start..<text.at]) else error(errors.invalid, "an ASCII FBX array count is not an integer")
@@ -182,7 +182,7 @@ struct Scanner:
         return self.data[self.at]
 
     ## Past spaces, line ends and `;` comments.
-    mutating func skip_space():
+    func skip_space():
         while self.at < self.data.length:
             let byte = self.data[self.at]
             if byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r':
@@ -193,7 +193,7 @@ struct Scanner:
                 return
 
     ## A name or bare word ([A-Za-z0-9_|.-]+): its start and end.
-    mutating func word() -> (usize, usize)?:
+    func word() -> (usize, usize)?:
         let start = self.at
         while self.at < self.data.length and is_word(self.data[self.at]): self.at += 1
         if self.at == start: return none
@@ -201,7 +201,7 @@ struct Scanner:
 
     ## Past a number's characters (sign, digits, point, exponent, and the
     ## letters of inf, nan and 1.#INF).
-    mutating func skip_number():
+    func skip_number():
         while self.at < self.data.length:
             let byte = self.data[self.at]
             if is_word(byte) or byte == '+' or byte == '#' or byte == '(' or byte == ')': self.at += 1
@@ -272,5 +272,5 @@ pub func parse_real(token: const u8[]) -> f64:
     # Anything else that looks like a number but is not (1.2.3, snan) reads
     # as NaN, as ufbx reads it, rather than failing the file.
     return strings.parse_f64((str)token) catch failure:
-        discard(failure)
+        _ = failure
         recover math.nan

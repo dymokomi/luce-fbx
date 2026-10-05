@@ -49,29 +49,29 @@ struct RawCurve:
     var data: u32[]
     var counts: i32[]
 
-    mutating func release():
+    func release():
         if self.times.length > 0: free(self.times) in memory.heap
         if self.values.length > 0: free(self.values) in memory.heap
         if self.flags.length > 0: free(self.flags) in memory.heap
         if self.data.length > 0: free(self.data) in memory.heap
         if self.counts.length > 0: free(self.counts) in memory.heap
 
-    mutating func plan(source: const Document*, times: u32, values: u32, node: u32, jobs: Growing[ArrayJob]*) -> !:
-        self.times = try alloc i64[source.array_count(times)] in memory.heap
+    func plan(source: const Document*, times: u32, values: u32, node: u32, jobs: Growing[ArrayJob]*) -> !:
+        self.times = try new i64[source.array_count(times)] --- in memory.heap
         try jobs.push(ArrayJob(times, Element.int64, u8[]((u8*)self.times.data, self.times.length * 8)))
-        self.values = try alloc f64[source.array_count(values)] in memory.heap
+        self.values = try new f64[source.array_count(values)] --- in memory.heap
         try jobs.push(ArrayJob(values, Element.real64, u8[]((u8*)self.values.data, self.values.length * 8)))
         if let flags = source.child(node, "KeyAttrFlags"):
-            self.flags = try alloc i32[source.array_count(flags)] in memory.heap
+            self.flags = try new i32[source.array_count(flags)] --- in memory.heap
             try jobs.push(ArrayJob(flags, Element.int32, u8[]((u8*)self.flags.data, self.flags.length * 4)))
         if let data = source.child(node, "KeyAttrDataFloat"):
             let count = source.array_count(data)
-            self.data = try alloc u32[count] in memory.heap
+            self.data = try new u32[count] --- in memory.heap
             # Integers keep their bits as i32; floats as f32: either way the
             # four bytes are the attribute's bits.
             try jobs.push(ArrayJob(data, Element.int32 if self.integer_bits else Element.real32, u8[]((u8*)self.data.data, count * 4)))
         if let counts = source.child(node, "KeyAttrRefCount"):
-            self.counts = try alloc i32[source.array_count(counts)] in memory.heap
+            self.counts = try new i32[source.array_count(counts)] --- in memory.heap
             try jobs.push(ArrayJob(counts, Element.int32, u8[]((u8*)self.counts.data, self.counts.length * 4)))
 
     ## Attribute `k` (0..3) of run `run` as a float, or as its bits.

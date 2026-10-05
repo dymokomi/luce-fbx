@@ -247,7 +247,7 @@ func dump_materials(mesh: const Mesh*, paths: const Attribute*, key: i32, path: 
         while text_index(materials, first_face) != names.items[at]: first_face += 1
         for byte in materials.text_at(first_face).bytes: try line.push(byte)
         var digits: u8[32] = ---
-        for byte in (try format(digits, f":{counts.items[at]}")).bytes: try line.push(byte)
+        for byte in (try strings.format(digits, f":{counts.items[at]}")).bytes: try line.push(byte)
     print(f"mat\t{path}\t{(str)line.view()}")
 
 func triple(values: f64[3], out: u8[]) -> str:

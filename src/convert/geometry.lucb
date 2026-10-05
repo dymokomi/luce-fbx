@@ -55,7 +55,7 @@ pub struct Layer:
     pub var integers: i32[]
     pub var index: i32[]
 
-    pub mutating func release():
+    pub func release():
         if self.values.length > 0: free(self.values) in memory.heap
         if self.integers.length > 0: free(self.integers) in memory.heap
         if self.index.length > 0: free(self.index) in memory.heap
@@ -106,7 +106,7 @@ pub struct MeshGeometry:
     pub var deformation: Deformation
     pub var world_space: bool
 
-    pub mutating func close():
+    pub func close():
         if self.vertices.length > 0: free(self.vertices) in memory.heap
         if self.indices.length > 0: free(self.indices) in memory.heap
         if self.edges.length > 0: free(self.edges) in memory.heap
@@ -186,8 +186,8 @@ func array_node(document: const Document*, parent: u32, name: str) -> u32?:
 func read_geometry(document: const Document*, object: u32, node: u32, warnings: Warnings*) -> MeshGeometry?!:
     let vertices = array_node(document, node, "Vertices") else return none
     let indices = array_node(document, node, "PolygonVertexIndex") else return none
-    discard(vertices)
-    discard(indices)
+    _ = vertices
+    _ = indices
     var geometry = MeshGeometry(object = object, node = node, vertices = empty_reals(), indices = empty_ints(), edges = empty_ints(), layers = Growing[Layer](), faces = Growing[i32](), broken = false, deformation = Deformation(), world_space = false)
     errdefer geometry.close()
     var cursor = document.first_child(node)
@@ -226,26 +226,26 @@ func plan_geometry(document: const Document*, geometry: MeshGeometry*, jobs: Gro
     let indices = document.child(node, "PolygonVertexIndex") else return
     let vertex_count = document.array_count(vertices)
     if vertex_count % 3 != 0: error(errors.invalid, "an FBX mesh's vertices are not triples")
-    geometry.vertices = try alloc f64[vertex_count] in memory.heap
+    geometry.vertices = try new f64[vertex_count] --- in memory.heap
     try jobs.push(ArrayJob(vertices, Element.real64, bytes_of[f64](geometry.vertices)))
-    geometry.indices = try alloc i32[document.array_count(indices)] in memory.heap
+    geometry.indices = try new i32[document.array_count(indices)] --- in memory.heap
     try jobs.push(ArrayJob(indices, Element.int32, bytes_of[i32](geometry.indices)))
     var by_edge = false
     for layer in geometry.layers.view(): by_edge = by_edge or layer.mapping == Mapping.edge
     if by_edge:
         if let edges = document.child(node, "Edges"):
-            geometry.edges = try alloc i32[document.array_count(edges)] in memory.heap
+            geometry.edges = try new i32[document.array_count(edges)] --- in memory.heap
             try jobs.push(ArrayJob(edges, Element.int32, bytes_of[i32](geometry.edges)))
     for index in 0..<geometry.layers.count:
         let layer = &geometry.layers.items[index]
         let count = document.array_count(layer.values_node)
         if integral(layer.kind):
-            layer.integers = try alloc i32[count] in memory.heap
+            layer.integers = try new i32[count] --- in memory.heap
             try jobs.push(ArrayJob(layer.values_node, Element.int32, bytes_of[i32](layer.integers)))
         else:
             # Values short of whole tuples lose the partial one.
             let whole = count // layer.width * layer.width
-            layer.values = try alloc f32[whole] in memory.heap
+            layer.values = try new f32[whole] --- in memory.heap
             if whole == count:
                 try jobs.push(ArrayJob(layer.values_node, Element.real32, bytes_of[f32](layer.values)))
             elif whole > 0:
@@ -254,7 +254,7 @@ func plan_geometry(document: const Document*, geometry: MeshGeometry*, jobs: Gro
                 memory.copy(layer.values, all[..<whole], whole)
                 free(all) in memory.heap
         if layer.index_node != absent:
-            layer.index = try alloc i32[document.array_count(layer.index_node)] in memory.heap
+            layer.index = try new i32[document.array_count(layer.index_node)] --- in memory.heap
             try jobs.push(ArrayJob(layer.index_node, Element.int32, bytes_of[i32](layer.index)))
 
 ## After decoding: a layer mapped by polygon whose values (or indices) are
@@ -269,7 +269,7 @@ func normalize_layers(geometry: MeshGeometry*):
 
 ## A typed span's bytes.
 func bytes_of[T](values: T[]) -> u8[]:
-    return u8[]((u8*)values.data, values.length * sizeof(T))
+    return u8[]((u8*)values.data, values.length * memory.size_of(T))
 
 func empty_reals() -> f64[]:
     var empty: f64[]

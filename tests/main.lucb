@@ -18,7 +18,7 @@ struct Tracker: memory.Allocator:
     var remaining: usize?
     var lock: sync.Mutex
 
-    pub mutating func allocate(size: usize, alignment: usize) -> u8[]?:
+    pub func allocate(size: usize, alignment: usize) -> u8[]?:
         if size == 0: return self.upstream.allocate(size, alignment)
         self.lock.lock()
         defer self.lock.unlock()
@@ -29,10 +29,10 @@ struct Tracker: memory.Allocator:
         self.live += 1
         return block
 
-    pub mutating func resize(block: u8[], size: usize) -> bool:
+    pub func resize(block: u8[], size: usize) -> bool:
         return self.upstream.resize(block, size)
 
-    pub mutating func release(block: u8[]):
+    pub func release(block: u8[]):
         if block.length == 0: return
         self.lock.lock()
         defer self.lock.unlock()

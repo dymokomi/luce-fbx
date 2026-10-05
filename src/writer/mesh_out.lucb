@@ -32,7 +32,7 @@ struct MeshPart:
     ## Each local polygon vertex's local point.
     var corner_points: Growing[i32]
 
-    mutating func close():
+    func close():
         self.faces.close()
         self.points.close()
         self.corners.close()
@@ -55,7 +55,7 @@ struct Numbering:
     var edge_local: i32[]
     var edge_stamp: i32[]
 
-    mutating func release():
+    func release():
         if self.point_local.length > 0: free(self.point_local) in memory.heap
         if self.point_stamp.length > 0: free(self.point_stamp) in memory.heap
         if self.edge_local.length > 0: free(self.edge_local) in memory.heap
@@ -75,10 +75,10 @@ func prepare_mesh(job: Export*, mesh: const Mesh*) -> !:
     let point_total = (usize)mesh.point_count()
     var numbering = Numbering(point_local = empty_ints32(), point_stamp = empty_ints32(), edge_local = empty_ints32(), edge_stamp = empty_ints32())
     defer numbering.release()
-    numbering.point_local = try alloc i32[point_total] in memory.heap
-    numbering.point_stamp = try alloc i32[point_total] in memory.heap
-    numbering.edge_local = try alloc i32[edge_total] in memory.heap
-    numbering.edge_stamp = try alloc i32[edge_total] in memory.heap
+    numbering.point_local = try new i32[point_total] --- in memory.heap
+    numbering.point_stamp = try new i32[point_total] --- in memory.heap
+    numbering.edge_local = try new i32[edge_total] --- in memory.heap
+    numbering.edge_stamp = try new i32[edge_total] --- in memory.heap
     for at in 0..<point_total: numbering.point_stamp[at] = -1
     for at in 0..<edge_total: numbering.edge_stamp[at] = -1
     try note_left_out(job, mesh)
@@ -195,7 +195,7 @@ func write_geometry(job: Export*, mesh: const Mesh*, part: const MeshPart*, id: 
     let origin = mesh.position_origin()
     let positions = mesh.point_span()
     let points = part.points.count
-    let vertices = try alloc u8[points * 24] in memory.heap
+    let vertices = try new u8[points * 24] --- in memory.heap
     var placing = VertexWork(positions = positions, points = part.points.view(), origin = origin, out = f64[]((f64*)vertices.data, points * 3))
     pool.parallel_for(points, 65536, place_vertices, (void*)&placing)
     try tree.begin("Vertices")
@@ -204,7 +204,7 @@ func write_geometry(job: Export*, mesh: const Mesh*, part: const MeshPart*, id: 
     # Polygons: the face's last corner as ~index.
     let offsets = mesh.offset_span()
     let total = part.corners.count
-    let indices = try alloc u8[total * 4] in memory.heap
+    let indices = try new u8[total * 4] --- in memory.heap
     let out = i32[]((i32*)indices.data, total)
     memory.copy(out, part.corner_points.view(), total)
     var at: usize = 0

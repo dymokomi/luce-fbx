@@ -18,7 +18,7 @@
 let header_bytes: usize = 27
 
 extend Document:
-    mutating func parse_binary() -> !:
+    func parse_binary() -> !:
         let data = self.data
         self.binary = true
         self.big = data[22] != 0
@@ -62,7 +62,7 @@ extend Document:
         self.nodes.items[0].end = (u32)self.nodes.count
 
     ## Record the properties of `record`; where its children start.
-    mutating func read_properties(record: Record) -> usize!:
+    func read_properties(record: Record) -> usize!:
         let data = self.data
         let big = self.big
         var at = record.properties

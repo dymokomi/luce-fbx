@@ -16,7 +16,7 @@ func prepare(job: Export*, set: const GeometrySet*) -> usize!:
         elif kind == instances_component(): instances = (const Instances*)component.data
         else:
             var line: u8[256] = ---
-            try job.warnings.add(try format(line, f"FBX has no form for the {kind.name} component; it was left out"))
+            try job.warnings.add(try strings.format(line, f"FBX has no form for the {kind.name} component; it was left out"))
     try job.prepared.push(Prepared(set = set, first_attach = first, attach_count = job.attaches.count - first, instances = instances))
     return job.prepared.count - 1
 
@@ -51,7 +51,7 @@ func attach_model(job: Export*, parent: i32, path: str, fallback: str) -> usize!
     let base = job.world_of(holder)
     if same_matrix(&base, &wanted): return try job.child_model(holder, name)
     let undo = base.inverse().multiply(wanted) catch failure:
-        discard(failure)
+        _ = failure
         recover Matrix4()
     let own = placement_of(&undo) else return try job.child_model(parent, name)
     # A model of its own, placed by the inverse (a row's or Null's name kept
@@ -111,7 +111,7 @@ func place_rows(job: Export*, instances: const Instances*, parent: i32, depth: u
                 # Relative to the ancestor: its placement undone.
                 let wanted = job.world_of(parent).multiply(row_matrix)
                 let relative = job.world_of(holder).inverse().multiply(wanted) catch failure:
-                    discard(failure)
+                    _ = failure
                     recover row_matrix
                 if let placed = placement_of(&relative): own = placed
                 else: holder = parent

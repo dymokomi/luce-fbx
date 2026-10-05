@@ -26,7 +26,7 @@ struct CurveUse:
     ## order - 1).
     var wrap: usize
 
-    mutating func release():
+    func release():
         if self.points.length > 0: free(self.points) in memory.heap
         if self.index.length > 0: free(self.index) in memory.heap
         if self.knots.length > 0: free(self.knots) in memory.heap
@@ -57,7 +57,7 @@ func gather_curves(scene: const Scene*, hierarchy: const Hierarchy*, options: co
             let points = array_node(document, node, "Points") else continue
             let second = array_node(document, node, "KnotVector" if nurbs else "PointsIndex") else continue
             let order = document.child_integer(node, "Order", 4) catch failure:
-                discard(failure)
+                _ = failure
                 recover 4
             if nurbs and (order < 2 or order > most_order):
                 try warnings.add("Skipped NURBS curves of an order geocore does not draw (2 to 8)")
@@ -70,13 +70,13 @@ func gather_curves(scene: const Scene*, hierarchy: const Hierarchy*, options: co
                     elif text == "Periodic": wrap = (usize)order - 1
             var use = CurveUse(node = node, nurbs = nurbs, matrix = convert.multiply(entry.geometry_world), path = try paths.intern(hierarchy.path(model)), points = empty_reals(), index = empty_ints(), knots = empty_reals(), order = order, wrap = wrap)
             errdefer use.release()
-            use.points = try alloc f64[document.array_count(points)] in memory.heap
+            use.points = try new f64[document.array_count(points)] --- in memory.heap
             try jobs.push(ArrayJob(points, Element.real64, bytes_of[f64](use.points)))
             if nurbs:
-                use.knots = try alloc f64[document.array_count(second)] in memory.heap
+                use.knots = try new f64[document.array_count(second)] --- in memory.heap
                 try jobs.push(ArrayJob(second, Element.real64, bytes_of[f64](use.knots)))
             else:
-                use.index = try alloc i32[document.array_count(second)] in memory.heap
+                use.index = try new i32[document.array_count(second)] --- in memory.heap
                 try jobs.push(ArrayJob(second, Element.int32, bytes_of[i32](use.index)))
             try uses.push(use)
 

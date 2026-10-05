@@ -82,7 +82,7 @@ pub struct Scene:
     var templates: Growing[Template]
 
     ## The scene of a parsed document, which must outlive it.
-    pub static func of(source: const Document*) -> Scene!:
+    pub func of(source: const Document*) -> Scene!:
         var scene = Scene(source, source.version < 7000, Growing[Object](), Growing[Connection](), Growing[u8](), Settings(), false, Growing[u32](), Growing[u32](), Growing[u32](), Growing[Template]())
         scene.blender_binary = source.binary and creator_starts(source, "Blender (")
         errdefer scene.close()
@@ -92,7 +92,7 @@ pub struct Scene:
         try scene.read_settings()
         return scene
 
-    pub mutating func close():
+    pub func close():
         self.objects.close()
         self.connections.close()
         self.names.close()
@@ -226,7 +226,7 @@ pub struct Scene:
         if connection.property == absent: return ""
         return self.document.string(&self.document.properties.items[(usize)connection.property]) else ""
 
-    mutating func read_objects() -> !:
+    func read_objects() -> !:
         let source = self.document
         # Object 0: the root.
         try self.objects.push(Object(id = 0, node = 0, kind = Kind.root, name_at = 0, name_length = 0, subclass = absent, key = absent))
@@ -243,7 +243,7 @@ pub struct Scene:
         else:
             sort_indices(self.lookup.items[..<self.lookup.count], &self, by_id_order)
 
-    mutating func read_object(node: u32) -> !:
+    func read_object(node: u32) -> !:
         let source = self.document
         let class = source.name(node)
         var id: i64 = 0
@@ -278,7 +278,7 @@ pub struct Scene:
     ## Append a name; its length. As ufbx sanitizes strings, each byte that
     ## does not start a valid UTF-8 sequence (and each NUL) becomes U+FFFD,
     ## and ASCII files' `&quot;` becomes a quote.
-    mutating func add_name(bytes: const u8[]) -> u32!:
+    func add_name(bytes: const u8[]) -> u32!:
         let start = self.names.count
         let ascii = not self.document.binary
         var at: usize = 0
@@ -298,7 +298,7 @@ pub struct Scene:
             at += length
         return (u32)(self.names.count - start)
 
-    mutating func read_connections() -> !:
+    func read_connections() -> !:
         let source = self.document
         if let connections = source.child(0, "Connections"):
             var cursor = source.first_child(connections)
@@ -313,7 +313,7 @@ pub struct Scene:
         sort_indices(self.by_child.items[..<self.by_child.count], &self, by_child_order)
         sort_indices(self.by_parent.items[..<self.by_parent.count], &self, by_parent_order)
 
-    mutating func read_connection(node: u32) -> !:
+    func read_connection(node: u32) -> !:
         let source = self.document
         let name = source.name(node)
         if name != "C" and name != "Connect": return
@@ -339,7 +339,7 @@ pub struct Scene:
         if id == 0: return 0
         return self.by_id(id)
 
-    mutating func read_templates() -> !:
+    func read_templates() -> !:
         let source = self.document
         let definitions = source.child(0, "Definitions") else return
         var cursor = source.first_child(definitions)

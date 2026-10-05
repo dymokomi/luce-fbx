@@ -14,17 +14,18 @@ from luce_geocore.kernel import save_geometry, load_geometry, adopt_set, set_mes
 from luce_geocore.core.growing import Growing
 from luce_fbx.kernel import Document, ImportOptions, ExportOptions, Warnings, import_document, encode_set, read_file
 from io import path
+import strings
 
 func row(name: str, started: u64, count: usize):
     print(f"{name}\t{(f64)time.since(started) / 1000000.0}\t{count}\t")
 
 ## The n×n quad grid of geocore's verb benchmark.
 func quad_grid(n: usize) -> interop.Reference[Mesh]!:
-    let points = try alloc Vector3[(n + 1) * (n + 1)] in memory.heap
+    let points = try new Vector3[(n + 1) * (n + 1)] --- in memory.heap
     defer free(points) in memory.heap
-    let sizes = try alloc i64[n * n] in memory.heap
+    let sizes = try new i64[n * n] --- in memory.heap
     defer free(sizes) in memory.heap
-    let corners = try alloc i64[n * n * 4] in memory.heap
+    let corners = try new i64[n * n * 4] --- in memory.heap
     defer free(corners) in memory.heap
     for z in 0..<n + 1:
         for x in 0..<n + 1: points[z * (n + 1) + x] = Vector3((f64)x - (f64)n * 0.5, 0.0, (f64)z - (f64)n * 0.5)
@@ -89,5 +90,5 @@ pub func main(arguments: str[]) -> i32!:
         # The file's name, not its directory.
         var name_start = arguments[at].length
         while name_start > 0 and arguments[at].bytes[name_start - 1] != '/': name_start -= 1
-        row(try format(line, f"read: {(str)arguments[at].bytes[name_start..]} (faces)"), started, faces)
+        row(try strings.format(line, f"read: {(str)arguments[at].bytes[name_start..]} (faces)"), started, faces)
     return 0

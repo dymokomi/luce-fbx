@@ -15,7 +15,7 @@ struct CurveGroup:
     var path_index: i32
     var curves: Growing[i32]
 
-    mutating func close():
+    func close():
         self.curves.close()
 
 func close_groups(groups: Growing[CurveGroup]*):

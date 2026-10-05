@@ -51,7 +51,7 @@ func put_edge_values(mesh: Mesh*, build: const MeshBuild*, geometries: const Mes
 ## Each polygon vertex's corner in the merged mesh (-1 in dropped faces),
 ## for one source; the caller frees it.
 func merged_corners(build: const MeshBuild*, geometry: const MeshGeometry*, source: const Source*) -> i32[]!:
-    let targets = try alloc i32[geometry.indices.length] in memory.heap
+    let targets = try new i32[geometry.indices.length] --- in memory.heap
     for at in 0..<targets.length: targets[at] = -1
     let corner_source = build.corner_source.view()
     let offsets = build.offsets.view()

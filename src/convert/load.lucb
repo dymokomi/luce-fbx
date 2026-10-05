@@ -36,7 +36,7 @@ struct Gathered:
         self.paths = TableBuilder()
         self.names = TableBuilder()
 
-    mutating func close():
+    func close():
         for index in 0..<self.geometries.count: self.geometries.items[index].close()
         self.geometries.close()
         self.uses.close()
@@ -239,7 +239,7 @@ func instance_rows(gathered: const Gathered*, options: const ImportOptions*, war
                 set.put(mesh_component(), (void*)mesh) catch failure:
                     dispose_set(set)
                     error(failure.code, failure.message)
-            discard(try instances.add_prototype(set))
+            _ = try instances.add_prototype(set)
             made += 1
         let placement = placement_of(&use.matrix) else continue
         try instances.add_instance(use.prototype, &placement, true)
@@ -269,7 +269,7 @@ func put_face_texts(mesh: Mesh*, build: const MeshBuild*, gathered: const Gather
     # empty name ("") where there is none.
     var names = TableBuilder()
     defer names.close()
-    discard(try names.intern(""))
+    _ = try names.intern("")
     for source in build.sources.view():
         let geometry = &gathered.geometries.items[source.geometry]
         var layer: const Layer*? = none

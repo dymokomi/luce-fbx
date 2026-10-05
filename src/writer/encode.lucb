@@ -42,7 +42,7 @@ func pack_blob(context: void*?, index: usize):
     let blob = &work.blobs[index]
     if blob.raw.length <= pack_above: return
     blob.packed = compress.compress(blob.raw, 1) catch failure:
-        discard(failure)
+        _ = failure
         blob.failed = true
         recover empty_bytes()
     blob.packed_length = blob.packed.length
@@ -59,7 +59,7 @@ func pack_blobs(tree: Tree*) -> !:
 func encode_tree(tree: Tree*, requested: u32, deflate: bool, version_prop: usize) -> u8[]!:
     if deflate: try pack_blobs(tree)
     var version = requested
-    var sizes = try alloc u64[tree.nodes.count] in memory.heap
+    var sizes = try new u64[tree.nodes.count] --- in memory.heap
     defer free(sizes) in memory.heap
     var total = measure(tree, sizes, false)
     if version == 0:
@@ -68,7 +68,7 @@ func encode_tree(tree: Tree*, requested: u32, deflate: bool, version_prop: usize
     if version >= 7500: total = measure(tree, sizes, true)
     elif total > 4294967295: error(errors.limit, "the FBX file needs 64-bit offsets: write version 7500")
     tree.props.items[version_prop].bits = (u64)version
-    let data = try alloc u8[(usize)total] in memory.heap
+    let data = try new u8[(usize)total] --- in memory.heap
     errdefer free(data) in memory.heap
     var out = Output(data = data, at = 0, wide = version >= 7500, copies = Growing[Copy]())
     defer out.copies.close()
@@ -149,28 +149,28 @@ struct Output:
     ## Array bytes still to copy: where, from which blob, and which piece.
     var copies: Growing[Copy]
 
-    mutating func put8(value: u8):
+    func put8(value: u8):
         self.data[(usize)self.at] = value
         self.at += 1
 
-    mutating func put32(value: u32):
+    func put32(value: u32):
         memory.write[u32]((void*)&self.data[(usize)self.at], value)
         self.at += 4
 
-    mutating func put64(value: u64):
+    func put64(value: u64):
         memory.write[u64]((void*)&self.data[(usize)self.at], value)
         self.at += 8
 
     ## A record-header number: u64 in 7500, u32 before.
-    mutating func number(value: u64):
+    func number(value: u64):
         if self.wide: self.put64(value)
         else: self.put32((u32)value)
 
-    mutating func bytes(value: const u8[]):
+    func bytes(value: const u8[]):
         if value.length > 0: memory.copy(self.data[(usize)self.at..], value, value.length)
         self.at += (u64)value.length
 
-    mutating func zeros(count: usize):
+    func zeros(count: usize):
         for k in 0..<count: self.data[(usize)self.at + k] = 0
         self.at += (u64)count
 

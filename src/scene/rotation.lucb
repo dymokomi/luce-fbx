@@ -59,64 +59,64 @@ pub func quat_euler(q: Quat, order: i64) -> Vector3:
     var vz: f64 = 0.0
     var t: f64 = 0.0
     if order == 0:
-        t = 2.0*(qw*qy - qx*qz)
+        t = 2.0 * (qw * qy - qx * qz)
         if math.abs(t) < eps:
             vy = math.asin(t)
-            vz = math.atan2(2.0*(qw*qz + qx*qy), 2.0*(qw*qw + qx*qx) - 1.0)
-            vx = -math.atan2(-2.0*(qw*qx + qy*qz), 2.0*(qw*qw + qz*qz) - 1.0)
+            vz = math.atan2(2.0 * (qw * qz + qx * qy), 2.0 * (qw * qw + qx * qx) - 1.0)
+            vx = -math.atan2(-2.0 * (qw * qx + qy * qz), 2.0 * (qw * qw + qz * qz) - 1.0)
         else:
             vy = (math.pi * 0.5 if t >= 0.0 else -math.pi * 0.5)
-            vz = math.atan2(-2.0*t*(qw*qx - qy*qz), t*(2.0*qw*qy + 2.0*qx*qz))
+            vz = math.atan2(-2.0 * t * (qw * qx - qy * qz), t * (2.0 * qw * qy + 2.0 * qx * qz))
             vx = 0.0
     elif order == 1:
-        t = 2.0*(qw*qz + qx*qy)
+        t = 2.0 * (qw * qz + qx * qy)
         if math.abs(t) < eps:
             vz = math.asin(t)
-            vy = math.atan2(2.0*(qw*qy - qx*qz), 2.0*(qw*qw + qx*qx) - 1.0)
-            vx = -math.atan2(-2.0*(qw*qx - qy*qz), 2.0*(qw*qw + qy*qy) - 1.0)
+            vy = math.atan2(2.0 * (qw * qy - qx * qz), 2.0 * (qw * qw + qx * qx) - 1.0)
+            vx = -math.atan2(-2.0 * (qw * qx - qy * qz), 2.0 * (qw * qw + qy * qy) - 1.0)
         else:
             vz = (math.pi * 0.5 if t >= 0.0 else -math.pi * 0.5)
-            vy = math.atan2(2.0*t*(qw*qx + qy*qz), -t*(2.0*qx*qy - 2.0*qw*qz))
+            vy = math.atan2(2.0 * t * (qw * qx + qy * qz), -t * (2.0 * qx * qy - 2.0 * qw * qz))
             vx = 0.0
     elif order == 2:
-        t = 2.0*(qw*qz - qx*qy)
+        t = 2.0 * (qw * qz - qx * qy)
         if math.abs(t) < eps:
             vz = math.asin(t)
-            vx = math.atan2(2.0*(qw*qx + qy*qz), 2.0*(qw*qw + qy*qy) - 1.0)
-            vy = -math.atan2(-2.0*(qw*qy + qx*qz), 2.0*(qw*qw + qx*qx) - 1.0)
+            vx = math.atan2(2.0 * (qw * qx + qy * qz), 2.0 * (qw * qw + qy * qy) - 1.0)
+            vy = -math.atan2(-2.0 * (qw * qy + qx * qz), 2.0 * (qw * qw + qx * qx) - 1.0)
         else:
             vz = (math.pi * 0.5 if t >= 0.0 else -math.pi * 0.5)
-            vx = math.atan2(-2.0*t*(qw*qy - qx*qz), t*(2.0*qw*qz + 2.0*qx*qy))
+            vx = math.atan2(-2.0 * t * (qw * qy - qx * qz), t * (2.0 * qw * qz + 2.0 * qx * qy))
             vy = 0.0
     elif order == 3:
-        t = 2.0*(qw*qx + qy*qz)
+        t = 2.0 * (qw * qx + qy * qz)
         if math.abs(t) < eps:
             vx = math.asin(t)
-            vz = math.atan2(2.0*(qw*qz - qx*qy), 2.0*(qw*qw + qy*qy) - 1.0)
-            vy = -math.atan2(-2.0*(qw*qy - qx*qz), 2.0*(qw*qw + qz*qz) - 1.0)
+            vz = math.atan2(2.0 * (qw * qz - qx * qy), 2.0 * (qw * qw + qy * qy) - 1.0)
+            vy = -math.atan2(-2.0 * (qw * qy - qx * qz), 2.0 * (qw * qw + qz * qz) - 1.0)
         else:
             vx = (math.pi * 0.5 if t >= 0.0 else -math.pi * 0.5)
-            vz = math.atan2(2.0*t*(qw*qy + qx*qz), -t*(2.0*qy*qz - 2.0*qw*qx))
+            vz = math.atan2(2.0 * t * (qw * qy + qx * qz), -t * (2.0 * qy * qz - 2.0 * qw * qx))
             vy = 0.0
     elif order == 4:
-        t = 2.0*(qw*qx - qy*qz)
+        t = 2.0 * (qw * qx - qy * qz)
         if math.abs(t) < eps:
             vx = math.asin(t)
-            vy = math.atan2(2.0*(qw*qy + qx*qz), 2.0*(qw*qw + qz*qz) - 1.0)
-            vz = -math.atan2(-2.0*(qw*qz + qx*qy), 2.0*(qw*qw + qy*qy) - 1.0)
+            vy = math.atan2(2.0 * (qw * qy + qx * qz), 2.0 * (qw * qw + qz * qz) - 1.0)
+            vz = -math.atan2(-2.0 * (qw * qz + qx * qy), 2.0 * (qw * qw + qy * qy) - 1.0)
         else:
             vx = (math.pi * 0.5 if t >= 0.0 else -math.pi * 0.5)
-            vy = math.atan2(-2.0*t*(qw*qz - qx*qy), t*(2.0*qw*qx + 2.0*qy*qz))
+            vy = math.atan2(-2.0 * t * (qw * qz - qx * qy), t * (2.0 * qw * qx + 2.0 * qy * qz))
             vz = 0.0
     elif order == 5:
-        t = 2.0*(qw*qy + qx*qz)
+        t = 2.0 * (qw * qy + qx * qz)
         if math.abs(t) < eps:
             vy = math.asin(t)
-            vx = math.atan2(2.0*(qw*qx - qy*qz), 2.0*(qw*qw + qz*qz) - 1.0)
-            vz = -math.atan2(-2.0*(qw*qz - qx*qy), 2.0*(qw*qw + qx*qx) - 1.0)
+            vx = math.atan2(2.0 * (qw * qx - qy * qz), 2.0 * (qw * qw + qz * qz) - 1.0)
+            vz = -math.atan2(-2.0 * (qw * qz - qx * qy), 2.0 * (qw * qw + qx * qx) - 1.0)
         else:
             vy = (math.pi * 0.5 if t >= 0.0 else -math.pi * 0.5)
-            vx = math.atan2(2.0*t*(qw*qz + qx*qy), -t*(2.0*qx*qz - 2.0*qw*qy))
+            vx = math.atan2(2.0 * t * (qw * qz + qx * qy), -t * (2.0 * qx * qz - 2.0 * qw * qy))
             vz = 0.0
     return Vector3(vx * (180.0 / math.pi), vy * (180.0 / math.pi), vz * (180.0 / math.pi))
 
@@ -152,17 +152,17 @@ pub struct Trs:
     pub var scale: Vector3 = Vector3(1.0, 1.0, 1.0)
 
     ## Scale the whole transform (as S * T, ufbx's ufbxi_mul_scale).
-    pub mutating func scaled(by: Vector3):
+    pub func scaled(by: Vector3):
         self.translation = Vector3(self.translation.x * by.x, self.translation.y * by.y, self.translation.z * by.z)
         self.scale = Vector3(self.scale.x * by.x, self.scale.y * by.y, self.scale.z * by.z)
 
     ## Rotate the whole transform (as R * T).
-    pub mutating func rotated(by: Quat):
+    pub func rotated(by: Quat):
         if by.is_identity(): return
         self.rotation = by.times(self.rotation)
         self.translation = by.rotate(self.translation)
 
-    pub mutating func moved(by: Vector3):
+    pub func moved(by: Vector3):
         self.translation = self.translation.add(by)
 
     pub func matrix() -> Matrix4:

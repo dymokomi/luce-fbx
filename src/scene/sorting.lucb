@@ -12,9 +12,9 @@ pub func sort_indices[K](indices: u32[], keys: const K*, order: func(const K*, u
         insertion_sort(indices[start..<end], keys, order)
         start = end
     if indices.length <= run: return
-    let scratch = alloc u32[indices.length] in memory.heap catch failure:
+    let scratch = new u32[indices.length] --- in memory.heap catch failure:
         # Without scratch memory, finish by insertion.
-        discard(failure)
+        _ = failure
         insertion_sort(indices, keys, order)
         return
     defer free(scratch) in memory.heap

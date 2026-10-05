@@ -51,7 +51,7 @@ pub struct MeshBuild:
         self.faces = 0
         self.corner_total = 0
 
-    pub mutating func close():
+    pub func close():
         self.sources.close()
         self.positions.release()
         self.offsets.release()

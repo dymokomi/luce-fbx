@@ -28,7 +28,7 @@ pub struct ShapeTarget:
     pub var target: f64
     pub var effective: f64
 
-    pub mutating func release():
+    pub func release():
         if self.indexes.length > 0: free(self.indexes) in memory.heap
         if self.offsets.length > 0: free(self.offsets) in memory.heap
         if self.offset_weights.length > 0: free(self.offset_weights) in memory.heap
@@ -40,7 +40,7 @@ pub struct BlendChannel:
     pub var count: usize
     pub var full_weights: f64[]
 
-    pub mutating func release():
+    pub func release():
         if self.full_weights.length > 0: free(self.full_weights) in memory.heap
 
 pub struct SkinCluster:
@@ -53,7 +53,7 @@ pub struct SkinCluster:
     ## Geometry to world at the evaluated pose.
     pub var matrix: Matrix4
 
-    pub mutating func release():
+    pub func release():
         if self.indexes.length > 0: free(self.indexes) in memory.heap
         if self.weights.length > 0: free(self.weights) in memory.heap
         if self.transform.length > 0: free(self.transform) in memory.heap
@@ -82,7 +82,7 @@ pub struct Deformation:
         self.dq_indexes = empty_ints()
         self.dq_weights = empty_reals()
 
-    pub mutating func close():
+    pub func close():
         for index in 0..<self.channels.count: self.channels.items[index].release()
         for index in 0..<self.targets.count: self.targets.items[index].release()
         for index in 0..<self.clusters.count: self.clusters.items[index].release()
@@ -111,7 +111,7 @@ func read_deformers(scene: const Scene*, hierarchy: const Hierarchy*, object: u3
                 into.skinned = true
                 try read_skin(scene, hierarchy, deformer, into, jobs)
             _: continue
-    discard(source)
+    _ = source
 
 func read_blend(scene: const Scene*, deformer: u32, into: Deformation*, jobs: Growing[ArrayJob]*) -> !:
     let source = scene.document
@@ -124,7 +124,7 @@ func read_blend(scene: const Scene*, deformer: u32, into: Deformation*, jobs: Gr
         errdefer entry.release()
         let node = scene.objects.items[(usize)channel].node
         if let weights = array_node(source, node, "FullWeights"):
-            entry.full_weights = try alloc f64[source.array_count(weights)] in memory.heap
+            entry.full_weights = try new f64[source.array_count(weights)] --- in memory.heap
             try jobs.push(ArrayJob(weights, Element.real64, bytes_of[f64](entry.full_weights)))
         for shape_index in 0..<scene.child_count(channel):
             let shape_connection = scene.child_connection(channel, shape_index)
@@ -133,9 +133,9 @@ func read_blend(scene: const Scene*, deformer: u32, into: Deformation*, jobs: Gr
             let indexes = array_node(source, shape_node, "Indexes") else continue
             let offsets = array_node(source, shape_node, "Vertices") else continue
             var target = ShapeTarget(indexes = empty_ints(), offsets = empty_reals(), offset_weights = empty_reals(), target = 1.0, effective = 0.0)
-            target.indexes = try alloc i32[source.array_count(indexes)] in memory.heap
+            target.indexes = try new i32[source.array_count(indexes)] --- in memory.heap
             errdefer target.release()
-            target.offsets = try alloc f64[source.array_count(offsets)] in memory.heap
+            target.offsets = try new f64[source.array_count(offsets)] --- in memory.heap
             try jobs.push(ArrayJob(indexes, Element.int32, bytes_of[i32](target.indexes)))
             try jobs.push(ArrayJob(offsets, Element.real64, bytes_of[f64](target.offsets)))
             try into.targets.push(target)
@@ -153,8 +153,8 @@ func read_skin(scene: const Scene*, hierarchy: const Hierarchy*, deformer: u32, 
             _: into.skinning = Skinning.linear
     if let indexes = array_node(source, node, "Indexes"):
         if let weights = array_node(source, node, "BlendWeights"):
-            into.dq_indexes = try alloc i32[source.array_count(indexes)] in memory.heap
-            into.dq_weights = try alloc f64[source.array_count(weights)] in memory.heap
+            into.dq_indexes = try new i32[source.array_count(indexes)] --- in memory.heap
+            into.dq_weights = try new f64[source.array_count(weights)] --- in memory.heap
             try jobs.push(ArrayJob(indexes, Element.int32, bytes_of[i32](into.dq_indexes)))
             try jobs.push(ArrayJob(weights, Element.real64, bytes_of[f64](into.dq_weights)))
     for index in 0..<scene.child_count(deformer):
@@ -175,18 +175,18 @@ func read_skin(scene: const Scene*, hierarchy: const Hierarchy*, deformer: u32, 
         errdefer entry.release()
         if let indexes = array_node(source, cluster_node, "Indexes"):
             if let weights = array_node(source, cluster_node, "Weights"):
-                entry.indexes = try alloc i32[source.array_count(indexes)] in memory.heap
-                entry.weights = try alloc f64[source.array_count(weights)] in memory.heap
+                entry.indexes = try new i32[source.array_count(indexes)] --- in memory.heap
+                entry.weights = try new f64[source.array_count(weights)] --- in memory.heap
                 try jobs.push(ArrayJob(indexes, Element.int32, bytes_of[i32](entry.indexes)))
                 try jobs.push(ArrayJob(weights, Element.real64, bytes_of[f64](entry.weights)))
         if let transform = array_node(source, cluster_node, "Transform"):
-            entry.transform = try alloc f64[source.array_count(transform)] in memory.heap
+            entry.transform = try new f64[source.array_count(transform)] --- in memory.heap
             try jobs.push(ArrayJob(transform, Element.real64, bytes_of[f64](entry.transform)))
         # The bone's bind: TransformLink, else the bind pose's matrix for it.
         var link_node = array_node(source, cluster_node, "TransformLink")
         if link_node == none and bone != absent: link_node = bind_pose_matrix(scene, hierarchy.models.items[(usize)bone].object)
         if let link = link_node:
-            entry.link = try alloc f64[source.array_count(link)] in memory.heap
+            entry.link = try new f64[source.array_count(link)] --- in memory.heap
             try jobs.push(ArrayJob(link, Element.real64, bytes_of[f64](entry.link)))
         try into.clusters.push(entry)
 

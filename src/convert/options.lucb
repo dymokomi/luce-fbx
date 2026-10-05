@@ -15,6 +15,7 @@ from luce_geocore.geocore import Vector3, Matrix4, Mesh
 from luce_geocore.kernel import Float3, Attribute, AttributeStore, Domain, DataType, Role, TableBuilder, GeometrySet, Placement, assembled, put_attribute, mesh_dispose, set_put_detail, empty_set, dispose_set, mesh_component, Instances, new_instances, instances_component, Curves, curves_assembled, curves_type
 from luce_geocore.core.growing import Growing
 from luce_geocore.core.shared import Column
+import strings
 
 ## What a load does.
 pub struct ImportOptions:
@@ -42,11 +43,11 @@ pub struct Warnings:
     pub func init():
         self.text = Growing[u8]()
 
-    pub mutating func close():
+    pub func close():
         self.text.close()
 
     ## Add `message` unless it is there already.
-    pub mutating func add(message: str) -> !:
+    pub func add(message: str) -> !:
         let held = (str)self.text.view()
         var start: usize = 0
         while start < held.length:
@@ -58,9 +59,9 @@ pub struct Warnings:
         try self.text.push(10)
 
     ## Add "<count><text>".
-    pub mutating func count(number: usize, text: str) -> !:
+    pub func count(number: usize, text: str) -> !:
         var line: u8[256] = ---
-        try self.add(try format(line, f"{number}{text}"))
+        try self.add(try strings.format(line, f"{number}{text}"))
 
 ## Elements per parallel chunk.
 let grain: usize = 16384

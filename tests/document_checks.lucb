@@ -27,7 +27,7 @@ pub func fixtures() -> !:
         var document = try Document.parse(data)
         defer document.close()
         assert(document.nodes.count > 10)
-        discard(try decode_everything(&document))
+        _ = try decode_everything(&document)
 
 ## Decode every array of `document` as f64; the total element count.
 func decode_everything(document: const Document*) -> usize!:
@@ -39,7 +39,7 @@ func decode_everything(document: const Document*) -> usize!:
     for node in 0..<(u32)document.nodes.count:
         if document.array_property(node) == none: continue
         let count = document.array_count(node)
-        let out = try alloc u8[count * 8] in memory.heap
+        let out = try new u8[count * 8] --- in memory.heap
         jobs.push(ArrayJob(node, Element.real64, out)) catch failure:
             free(out) in memory.heap
             error(failure.code, failure.message)
@@ -86,14 +86,14 @@ pub func corruptions() -> !:
     for path in files:
         let data = try read_file(path)
         defer free(data) in memory.heap
-        let copy = try alloc u8[data.length] in memory.heap
+        let copy = try new u8[data.length] --- in memory.heap
         defer free(copy) in memory.heap
         let span = 4096 if data.length > 4096 else data.length
         var at: usize = 0
         while at < span:
             memory.copy(copy, data, data.length)
             copy[at] = copy[at] ^ 0xA5
-            discard(try survives(copy))
+            _ = try survives(copy)
             at += 3
 
 ## Parse, decode, and build the scene and hierarchy of `data`: whether it
@@ -106,7 +106,7 @@ func survives(data: const u8[]) -> bool!:
     let decoded = decode_everything(&document) catch failure:
         if failure.code == memory.exhausted: error(failure.code, failure.message)
         recover 0
-    discard(decoded)
+    _ = decoded
     var scene = Scene.of(&document) catch failure:
         if failure.code == memory.exhausted: error(failure.code, failure.message)
         return true

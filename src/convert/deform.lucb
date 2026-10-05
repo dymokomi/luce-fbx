@@ -126,7 +126,7 @@ func skin(hierarchy: const Hierarchy*, geometry: MeshGeometry*, model: u32) -> !
         let link = matrix_of(cluster.link) else Matrix4()
         if cluster.transform.length < 16 or all_zero(cluster.transform):
             let inverse = link.inverse() catch failure:
-                discard(failure)
+                _ = failure
                 recover Matrix4()
             to_bone = inverse.multiply(entry.world)
         to_bone = to_bone.multiply(entry.geometric)

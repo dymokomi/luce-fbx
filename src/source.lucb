@@ -31,7 +31,7 @@ pub func read(path: str) -> u8[]!:
     # One byte more than the size tells an exact fit from a file that grew.
     var capacity = (usize)info.size + 1 if info.size >= 0 else 65536
     if (u64)capacity > limit: capacity = (usize)limit
-    var data = try alloc u8[capacity] in memory.heap
+    var data = try new u8[capacity] --- in memory.heap
     errdefer free(data) in memory.heap
     var used: usize = 0
     while true:
@@ -39,7 +39,7 @@ pub func read(path: str) -> u8[]!:
             if (u64)used >= limit: error(errors.limit, "the FBX file is larger than this machine's memory")
             var larger = (u64)data.length * 2
             if larger > limit: larger = limit
-            let grown = try alloc u8[(usize)larger] in memory.heap
+            let grown = try new u8[(usize)larger] --- in memory.heap
             memory.copy(grown, data, used)
             free(data) in memory.heap
             data = grown

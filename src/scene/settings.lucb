@@ -32,7 +32,7 @@ let mode_rates: f64[18] = [30.0, 120.0, 100.0, 60.0, 50.0, 48.0, 30.0, 30.0, 29.
 let custom_mode: i64 = 14
 
 extend Scene:
-    mutating func read_settings() -> !:
+    func read_settings() -> !:
         var settings = Settings()
         settings.up = self.axis("UpAxis", "UpAxisSign", settings.up)
         settings.front = self.axis("FrontAxis", "FrontAxisSign", settings.front)

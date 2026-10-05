@@ -44,7 +44,7 @@ struct Blob:
     var packed_length: usize
     var failed: bool
 
-    mutating func release():
+    func release():
         if self.raw.length > 0: free(self.raw) in memory.heap
         if self.packed.length > 0: free(self.packed) in memory.heap
 
@@ -71,7 +71,7 @@ pub struct Tree:
         self.roots = Growing[u32]()
         self.open = Growing[u32]()
 
-    pub mutating func close():
+    pub func close():
         for at in 0..<self.blobs.count: self.blobs.items[at].release()
         self.nodes.close()
         self.props.close()
@@ -81,7 +81,7 @@ pub struct Tree:
         self.open.close()
 
     ## Open a child of the open node (or a top-level node).
-    pub mutating func begin(name: str) -> !:
+    pub func begin(name: str) -> !:
         let index = (u32)self.nodes.count
         let start = (u32)self.text.count
         for byte in name.bytes: try self.text.push(byte)
@@ -90,37 +90,37 @@ pub struct Tree:
         try self.open.push(index)
 
     ## Close the open node.
-    pub mutating func end():
+    pub func end():
         self.open.count -= 1
         let index = (usize)self.open.items[self.open.count]
         self.nodes.items[index].end = (u32)self.nodes.count
 
     ## The node properties are being added to (the last one opened).
-    mutating func prop(value: WProp) -> !:
+    func prop(value: WProp) -> !:
         let index = (usize)self.open.items[self.open.count - 1]
         try self.props.push(value)
         self.nodes.items[index].prop_count += 1
 
-    pub mutating func int32(value: i32) -> !:
+    pub func int32(value: i32) -> !:
         try self.prop(WProp(kind = 'I', bits = (u64)(u32)value, start = 0, length = 0))
 
-    pub mutating func int64(value: i64) -> !:
+    pub func int64(value: i64) -> !:
         try self.prop(WProp(kind = 'L', bits = (u64)value, start = 0, length = 0))
 
-    pub mutating func real64(value: f64) -> !:
+    pub func real64(value: f64) -> !:
         try self.prop(WProp(kind = 'D', bits = value.bits(), start = 0, length = 0))
 
     ## A one-byte value ('C'): 'T' or 'F' for Shading, 1 or 0 for flags.
-    pub mutating func flag(value: u8) -> !:
+    pub func flag(value: u8) -> !:
         try self.prop(WProp(kind = 'C', bits = (u64)value, start = 0, length = 0))
 
-    pub mutating func string(value: str) -> !:
+    pub func string(value: str) -> !:
         let start = self.text.count
         for byte in value.bytes: try self.text.push(byte)
         try self.prop(WProp(kind = 'S', bits = 0, start = start, length = value.length))
 
     ## An object's name as FBX 7 stores it: "Name\x00\x01Class".
-    pub mutating func object_name(name: str, class: str) -> !:
+    pub func object_name(name: str, class: str) -> !:
         let start = self.text.count
         for byte in name.bytes: try self.text.push(byte)
         try self.text.push(0)
@@ -128,14 +128,14 @@ pub struct Tree:
         for byte in class.bytes: try self.text.push(byte)
         try self.prop(WProp(kind = 'S', bits = 0, start = start, length = name.length + 2 + class.length))
 
-    pub mutating func raw(value: const u8[]) -> !:
+    pub func raw(value: const u8[]) -> !:
         let start = self.text.count
         for byte in value: try self.text.push(byte)
         try self.prop(WProp(kind = 'R', bits = 0, start = start, length = value.length))
 
     ## An array property of `count` elements in `raw`, which the tree takes
     ## (and frees, even when this fails).
-    pub mutating func array(kind: u8, count: usize, raw: u8[]) -> !:
+    pub func array(kind: u8, count: usize, raw: u8[]) -> !:
         var blob = Blob(kind = kind, count = count, raw = raw, packed = empty_bytes(), packed_length = 0, failed = false)
         self.blobs.push(blob) catch failure:
             blob.release()
@@ -143,83 +143,83 @@ pub struct Tree:
         try self.prop(WProp(kind = kind, bits = 0, start = self.blobs.count - 1, length = 0))
 
     ## Arrays from values the caller keeps.
-    pub mutating func ints(values: const i32[]) -> !:
-        let raw = try alloc u8[values.length * 4] in memory.heap
+    pub func ints(values: const i32[]) -> !:
+        let raw = try new u8[values.length * 4] --- in memory.heap
         if values.length > 0: memory.copy(raw, u8[]((u8*)values.data, values.length * 4), values.length * 4)
         try self.array('i', values.length, raw)
 
-    pub mutating func reals(values: const f64[]) -> !:
-        let raw = try alloc u8[values.length * 8] in memory.heap
+    pub func reals(values: const f64[]) -> !:
+        let raw = try new u8[values.length * 8] --- in memory.heap
         if values.length > 0: memory.copy(raw, u8[]((u8*)values.data, values.length * 8), values.length * 8)
         try self.array('d', values.length, raw)
 
     # -- Leaves: a node with one value.
 
-    pub mutating func leaf_int32(name: str, value: i32) -> !:
+    pub func leaf_int32(name: str, value: i32) -> !:
         try self.begin(name)
         try self.int32(value)
         self.end()
 
-    pub mutating func leaf_int64(name: str, value: i64) -> !:
+    pub func leaf_int64(name: str, value: i64) -> !:
         try self.begin(name)
         try self.int64(value)
         self.end()
 
-    pub mutating func leaf_real(name: str, value: f64) -> !:
+    pub func leaf_real(name: str, value: f64) -> !:
         try self.begin(name)
         try self.real64(value)
         self.end()
 
-    pub mutating func leaf_string(name: str, value: str) -> !:
+    pub func leaf_string(name: str, value: str) -> !:
         try self.begin(name)
         try self.string(value)
         self.end()
 
     ## An empty node (no properties, no children).
-    pub mutating func leaf(name: str) -> !:
+    pub func leaf(name: str) -> !:
         try self.begin(name)
         self.end()
 
     # -- Properties70 entries: P: name, type, label, flags, values.
 
-    mutating func p(name: str, kind: str, label: str, flags: str) -> !:
+    func p(name: str, kind: str, label: str, flags: str) -> !:
         try self.begin("P")
         try self.string(name)
         try self.string(kind)
         try self.string(label)
         try self.string(flags)
 
-    pub mutating func p_int(name: str, value: i32) -> !:
+    pub func p_int(name: str, value: i32) -> !:
         try self.p(name, "int", "Integer", "")
         try self.int32(value)
         self.end()
 
-    pub mutating func p_bool(name: str, value: bool) -> !:
+    pub func p_bool(name: str, value: bool) -> !:
         try self.p(name, "bool", "", "")
         try self.int32(1 if value else 0)
         self.end()
 
-    pub mutating func p_enum(name: str, value: i32) -> !:
+    pub func p_enum(name: str, value: i32) -> !:
         try self.p(name, "enum", "", "")
         try self.int32(value)
         self.end()
 
-    pub mutating func p_double(name: str, value: f64) -> !:
+    pub func p_double(name: str, value: f64) -> !:
         try self.p(name, "double", "Number", "")
         try self.real64(value)
         self.end()
 
-    pub mutating func p_time(name: str, value: i64) -> !:
+    pub func p_time(name: str, value: i64) -> !:
         try self.p(name, "KTime", "Time", "")
         try self.int64(value)
         self.end()
 
-    pub mutating func p_string(name: str, value: str) -> !:
+    pub func p_string(name: str, value: str) -> !:
         try self.p(name, "KString", "", "")
         try self.string(value)
         self.end()
 
-    pub mutating func p_color(name: str, value: Vector3) -> !:
+    pub func p_color(name: str, value: Vector3) -> !:
         try self.p(name, "ColorRGB", "Color", "")
         try self.real64(value.x)
         try self.real64(value.y)
@@ -227,7 +227,7 @@ pub struct Tree:
         self.end()
 
     ## A three-number property of type `kind` (Lcl Translation, Vector3D...).
-    pub mutating func p_vector(name: str, kind: str, label: str, flags: str, value: Vector3) -> !:
+    pub func p_vector(name: str, kind: str, label: str, flags: str, value: Vector3) -> !:
         try self.p(name, kind, label, flags)
         try self.real64(value.x)
         try self.real64(value.y)
@@ -235,7 +235,7 @@ pub struct Tree:
         self.end()
 
     ## Move top-level node `moved` (a root index) to just before `before`.
-    pub mutating func root_before(moved: u32, before: u32):
+    pub func root_before(moved: u32, before: u32):
         var from_at: usize = 0
         var to_at: usize = 0
         for at in 0..<self.roots.count:

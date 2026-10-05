@@ -12,7 +12,6 @@
 ## scales blend component-wise (ufbx composes them as quaternions and
 ## products when a layer asks; that is not done here).
 
-
 pub enum Interpolation as u8:
     constant_previous = 0
     constant_next = 1
@@ -79,7 +78,7 @@ pub struct Animation:
     ## Value indices sorted by target (stable: layer order kept per target).
     var by_target: Growing[u32]
 
-    pub mutating func close():
+    pub func close():
         self.layers.close()
         self.values.close()
         self.curves.close()
@@ -349,7 +348,6 @@ extend Scene:
             let connection = self.parent_connection(node, index)
             if connection.property == absent: continue
             try result.values.push(AnimValue(layer = layer, target = connection.parent, name_node = connection.node, name_index = 3, curves = curves, defaults = defaults))
-
 
     ## Decode every curve's keys in one batch, then their tangents.
     func read_curves(result: Animation*, objects: const u32[]) -> !:

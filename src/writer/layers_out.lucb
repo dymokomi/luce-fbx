@@ -1,6 +1,8 @@
 ## A mesh part's layer elements (the table in mesh_out.lucb) and the Layer
 ## nodes naming them: layer k lists every element of set k.
 
+import strings
+
 let layer_types: str[11] = ["LayerElementNormal", "LayerElementTangent", "LayerElementBinormal", "LayerElementUV", "LayerElementColor", "LayerElementSmoothing", "LayerElementEdgeCrease", "LayerElementVertexCrease", "LayerElementHole", "LayerElementVisibility", "LayerElementMaterial"]
 let normal_layer: u8 = 0
 let tangent_layer: u8 = 1
@@ -21,7 +23,7 @@ struct LayerList:
     func init():
         self.entries = Growing[(u8, i32)]()
 
-    mutating func close():
+    func close():
         self.entries.close()
 
 ## Set index of `name` as `base` + an optional number 2..16 ("uv" 0,
@@ -62,7 +64,7 @@ func note_left_out(job: Export*, mesh: const Mesh*) -> !:
         let entry = try mesh.attribute_entry((i64)index)
         if written(entry): continue
         var line: u8[256] = ---
-        try job.warnings.add(try format(line, f"FBX has no layer for the mesh attribute {entry.name()}; it was left out"))
+        try job.warnings.add(try strings.format(line, f"FBX has no layer for the mesh attribute {entry.name()}; it was left out"))
 
 ## The part's elements of `domain`, in local order.
 func elements_of(part: const MeshPart*, domain: Domain) -> const i32[]:
@@ -112,7 +114,7 @@ func real_array(tree: Tree*, key: str, raw: u8[]) -> !:
 ## `scale`, as f32; a float column is read directly, in parallel chunks.
 func gathered(entry: const Attribute*, elements: const i32[], width: usize, scale: f64) -> u8[]!:
     let count = element_count(elements, entry.domain)
-    let raw = try alloc u8[count * width * 4] in memory.heap
+    let raw = try new u8[count * width * 4] --- in memory.heap
     let out = f32[]((f32*)raw.data, count * width)
     let direct = entry.width >= width and entry.domain != Domain.detail
     if direct and entry.kind == DataType.float32 and entry.data.view().length >= entry.elements * entry.width * 4:
@@ -174,9 +176,9 @@ func color_out(tree: Tree*, layers: LayerList*, mesh: const Mesh*, part: const M
     let count = element_count(elements, entry.domain)
     var alpha: const Attribute*? = none
     var alpha_name: u8[16] = ---
-    let found = mesh.find_attribute(try format(alpha_name, f"Alpha{set + 1}") if set > 0 else "Alpha", (i64)(u8)entry.domain)
+    let found = mesh.find_attribute(try strings.format(alpha_name, f"Alpha{set + 1}") if set > 0 else "Alpha", (i64)(u8)entry.domain)
     if found >= 0: alpha = try mesh.attribute_entry(found)
-    let raw = try alloc u8[count * 16] in memory.heap
+    let raw = try new u8[count * 16] --- in memory.heap
     let out = f32[]((f32*)raw.data, count * 4)
     for at in 0..<count:
         let element = element_at(elements, entry.domain, at)
@@ -199,7 +201,7 @@ func int_layer(tree: Tree*, layers: LayerList*, kind: u8, domain: Domain, key: s
 ## A group's membership per element as i32: `inside` for members, else
 ## `outside`.
 func group_values(entry: const Attribute*, elements: const i32[], inside: i32, outside: i32) -> u8[]!:
-    let raw = try alloc u8[elements.length * 4] in memory.heap
+    let raw = try new u8[elements.length * 4] --- in memory.heap
     let out = i32[]((i32*)raw.data, elements.length)
     for at in 0..<elements.length:
         out[at] = inside if entry.number((usize)elements[at], 0) != 0.0 else outside
@@ -239,14 +241,14 @@ func write_layers(job: Export*, mesh: const Mesh*, part: const MeshPart*, layers
     # Smoothing: the face groups, else the sharp edges, else flat when
     # there are no normals either (geocore shows such a mesh flat).
     if let groups = smoothing:
-        let raw = try alloc u8[part.faces.count * 4] in memory.heap
+        let raw = try new u8[part.faces.count * 4] --- in memory.heap
         let out = i32[]((i32*)raw.data, part.faces.count)
         for at in 0..<part.faces.count: out[at] = (i32)groups.number((usize)part.faces.items[at], 0)
         try int_layer(tree, layers, smoothing_layer, Domain.face, "Smoothing", raw, part.faces.count)
     elif let edges = sharp:
         try int_layer(tree, layers, smoothing_layer, Domain.edge, "Smoothing", try group_values(edges, part.edges.view(), 0, 1), part.edges.count)
     elif not normals:
-        let raw = try alloc u8[part.faces.count * 4] in memory.heap
+        let raw = try new u8[part.faces.count * 4] --- in memory.heap
         let out = i32[]((i32*)raw.data, part.faces.count)
         for at in 0..<part.faces.count: out[at] = 0
         try int_layer(tree, layers, smoothing_layer, Domain.face, "Smoothing", raw, part.faces.count)
@@ -264,7 +266,7 @@ func write_materials(job: Export*, mesh: const Mesh*, part: const MeshPart*, lay
     defer local_of.close()
     var texts = Growing[i32]()
     defer texts.close()
-    let raw = try alloc u8[part.faces.count * 4] in memory.heap
+    let raw = try new u8[part.faces.count * 4] --- in memory.heap
     var taken = false
     errdefer:
         if not taken: free(raw) in memory.heap
@@ -293,7 +295,7 @@ func write_materials(job: Export*, mesh: const Mesh*, part: const MeshPart*, lay
     if uniform:
         # One index for every face.
         free(raw) in memory.heap
-        let one = try alloc u8[4] in memory.heap
+        let one = try new u8[4] --- in memory.heap
         memory.write[i32]((void*)&one[0], 0)
         try tree.array('i', 1, one)
     else: try tree.array('i', part.faces.count, raw)
