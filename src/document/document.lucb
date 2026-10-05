@@ -67,7 +67,7 @@ pub struct Document:
     pub var properties: Growing[Property]
 
     ## Parse `data`, binary or ASCII, into the node tree.
-    pub func parse(data: const u8[]) -> Document!:
+    pub static func parse(data: const u8[]) -> Document!:
         var document = Document(data, 0, false, false, Growing[Node](), Growing[Property]())
         errdefer document.close()
         if is_binary(data):
@@ -81,7 +81,7 @@ pub struct Document:
         self.properties.close()
 
     ## The root node (0): the top-level nodes are its children.
-    pub func root() -> u32:
+    pub static func root() -> u32:
         return 0
 
     pub func name(node: u32) -> str:

@@ -134,7 +134,7 @@ extend Scene:
         inputs.visibility = animation.evaluate_number(&self, object, "Visibility", time, inputs.visibility)
 
     ## Parents before children; fails on a cycle.
-    func order_models(result: Hierarchy*) -> !:
+    static func order_models(result: Hierarchy*) -> !:
         let count = result.models.count
         var depth = Growing[u32]()
         defer depth.close()

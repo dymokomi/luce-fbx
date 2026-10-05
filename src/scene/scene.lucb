@@ -82,7 +82,7 @@ pub struct Scene:
     var templates: Growing[Template]
 
     ## The scene of a parsed document, which must outlive it.
-    pub func of(source: const Document*) -> Scene!:
+    pub static func of(source: const Document*) -> Scene!:
         var scene = Scene(source, source.version < 7000, Growing[Object](), Growing[Connection](), Growing[u8](), Settings(), false, Growing[u32](), Growing[u32](), Growing[u32](), Growing[Template]())
         scene.blender_binary = source.binary and creator_starts(source, "Blender (")
         errdefer scene.close()
