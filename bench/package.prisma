@@ -7,17 +7,14 @@ def package "luce_fbx_bench" {
     }
     def dependency "luce-geocore" {
         str owner = "dymokomi"
-        str version = "^0.2.4"
         str path = "../../luce-geocore"
     }
     def dependency "luce-compress" {
         str owner = "dymokomi"
-        str version = "^0.3.1"
         str path = "../../luce-compress"
     }
     def dependency "luce-std" {
         str owner = "dymokomi"
-        str version = "^0.1.0"
         str path = "../../luce-std"
     }
 }
