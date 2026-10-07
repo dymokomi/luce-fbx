@@ -2,6 +2,8 @@
 ## live blocks, so each check must free everything it allocated. `inject`
 ## fails a check's allocations one at a time: every failure must surface as
 ## memory.exhausted and leave nothing allocated.
+import c
+import os
 import memory
 import sync
 from luce_geocore.core import parallel as geocore_parallel
@@ -66,6 +68,9 @@ func inject(tracker: Tracker*, check: func() -> unit!, what: str):
         if not failed: return
 
 pub func main(arguments: str[]) -> i32!:
+    # run from this program's own directory, wherever luc test starts it
+    if let here = os.env("LUC_TEST_DIR"):
+        try os.change_dir((c.str)here)
     # Start the pool first: its starting threads free blocks in the current heap.
     geocore_parallel.warm()
     let previous = memory.heap

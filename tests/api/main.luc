@@ -1,9 +1,12 @@
 # luce-fbx's Luce regressions: the public API on the fixtures in ../fixtures, writing what
 # it saves into a temporary directory.
-from luce_std import files
+from luce_std import files, process
 from fbx_tests import fbx_tests
 
 pub func main(arguments: list[str]) -> int!:
+    # run from this program's own directory, wherever luc test starts it
+    if let here = process.variable("LUC_TEST_DIR"):
+        process.change_directory(here)
     with files.TemporaryDirectory() as directory:
         fbx_tests(directory.path())
     return 0
