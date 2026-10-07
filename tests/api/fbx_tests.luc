@@ -4,14 +4,14 @@
 ## back (a 1000-corner n-gon, instances, 7500, raw arrays).
 from luce_fbx.fbx import Fbx
 from luce_geocore.geocore import invalid, Mesh, GeometrySet, Vector3
-from luce_std import math
+from luce_std import math, paths
 
 func near(a: float, b: float):
     if math.abs(a - b) >= 0.000001: print(f"near failed: actual={a}, expected={b}")
     assert(math.abs(a - b) < 0.000001)
 
-pub func fbx_tests() -> unit!:
-    let cube = Fbx.load("tests/fixtures/blender_279_default_7400_binary.fbx")
+pub func fbx_tests(scratch: str) -> unit!:
+    let cube = Fbx.load("../fixtures/blender_279_default_7400_binary.fbx")
     let mesh = cube.mesh() else error(invalid, "no mesh")
     assert(mesh.point_count() == 8 and mesh.face_count() == 6)
     near(mesh.bounds().minimum.x, -1.0)
@@ -19,31 +19,31 @@ pub func fbx_tests() -> unit!:
     assert(cube.detail_value("fbx.metersPerUnit") == 1.0)
     for version in [7400, 7500]:
         for compressed in [0, 1]:
-            let generated = Fbx.load(f"tests/fixtures/generated_{version}_{compressed}.fbx")
+            let generated = Fbx.load(f"../fixtures/generated_{version}_{compressed}.fbx")
             assert((generated.mesh() else error(invalid, "no mesh")).face_count() == 1)
-    let shared = Fbx.load("tests/fixtures/blender_293_instancing_7400_binary.fbx")
+    let shared = Fbx.load("../fixtures/blender_293_instancing_7400_binary.fbx")
     assert(shared.instance_count() == 8)
-    let merged = Fbx.load("tests/fixtures/blender_293_instancing_7400_binary.fbx", instancing = false)
+    let merged = Fbx.load("../fixtures/blender_293_instancing_7400_binary.fbx", instancing = false)
     assert((merged.mesh() else error(invalid, "no mesh")).face_count() == 4000)
-    let converted = Fbx.load("tests/fixtures/max_edge_visibility_7500_binary.fbx", convert_units = true)
+    let converted = Fbx.load("../fixtures/max_edge_visibility_7500_binary.fbx", convert_units = true)
     assert(converted.detail_value("fbx.metersPerUnit") == 1.0)
     for name in ["bad_offset", "truncated"]:
         var failed = false
-        _ = Fbx.load(f"tests/fixtures/generated_{name}.fbx") catch failure:
+        _ = Fbx.load(f"../fixtures/generated_{name}.fbx") catch failure:
             failed = true
         assert(failed)
     # Dual quaternion skinning animated: the mesh moves with the frame.
-    let early = Fbx.load("tests/fixtures/maya_dq_weights_7500_binary.fbx", time = 0.5).mesh() else error(invalid, "no mesh")
-    let late = Fbx.load("tests/fixtures/maya_dq_weights_7500_binary.fbx", frame = 1.2 * 24.0).mesh() else error(invalid, "no mesh")
+    let early = Fbx.load("../fixtures/maya_dq_weights_7500_binary.fbx", time = 0.5).mesh() else error(invalid, "no mesh")
+    let late = Fbx.load("../fixtures/maya_dq_weights_7500_binary.fbx", frame = 1.2 * 24.0).mesh() else error(invalid, "no mesh")
     assert(early.point_count() == late.point_count() and early.point(0).x != late.point(0).x)
-    let info = Fbx.info("tests/fixtures/maya_dq_weights_7500_binary.fbx")
+    let info = Fbx.info("../fixtures/maya_dq_weights_7500_binary.fbx")
     assert(info.contains("frameRate: 24") and info.contains("Deformer: ") and info.contains("animation: "))
     _ = Fbx.warnings()
-    save_tests()
+    save_tests(scratch)
     print("PASS Fbx.load, info and save: binary and ASCII scenes, instancing, units, animation and skins at a time, damaged files, saves read back")
 
 ## Saves read back.
-func save_tests() -> unit!:
+func save_tests(scratch: str) -> unit!:
     # A 1000-corner concave star stays one face.
     let points: list[Vector3] = []
     let corners: list[int] = []
@@ -52,24 +52,24 @@ func save_tests() -> unit!:
         let angle = 2.0 * math.pi * float(at) / 1000.0
         points.append(Vector3(radius * math.cos(angle), 0.0, radius * math.sin(angle)))
         corners.append(at)
-    Fbx.save(GeometrySet.of_mesh(Mesh(points, [1000], corners)), "star.fbx")
-    let star = Fbx.load("star.fbx").mesh() else error(invalid, "no mesh")
+    Fbx.save(GeometrySet.of_mesh(Mesh(points, [1000], corners)), paths.join(scratch, "star.fbx"))
+    let star = Fbx.load(paths.join(scratch, "star.fbx")).mesh() else error(invalid, "no mesh")
     assert(star.face_count() == 1 and star.face_size(0) == 1000 and star.point_count() == 1000)
     near(star.point(500).x, -1.0)
     # The cube and the eight shared Suzannes, at 7400 and 7500, deflated
     # and raw.
-    let cube = Fbx.load("tests/fixtures/blender_279_default_7400_binary.fbx")
-    let shared = Fbx.load("tests/fixtures/blender_293_instancing_7400_binary.fbx")
+    let cube = Fbx.load("../fixtures/blender_279_default_7400_binary.fbx")
+    let shared = Fbx.load("../fixtures/blender_293_instancing_7400_binary.fbx")
     for version in [7400, 7500]:
         for deflate in [true, false]:
-            Fbx.save(cube, "cube.fbx", version = version, deflate = deflate)
-            let again = Fbx.load("cube.fbx")
+            Fbx.save(cube, paths.join(scratch, "cube.fbx"), version = version, deflate = deflate)
+            let again = Fbx.load(paths.join(scratch, "cube.fbx"))
             let mesh = again.mesh() else error(invalid, "no mesh")
             assert(mesh.point_count() == 8 and mesh.face_count() == 6)
-            assert(Fbx.info("cube.fbx").contains(f"version: {version}"))
-            Fbx.save(shared, "shared.fbx", version = version, deflate = deflate)
-            assert(Fbx.load("shared.fbx").instance_count() == 8)
+            assert(Fbx.info(paths.join(scratch, "cube.fbx")).contains(f"version: {version}"))
+            Fbx.save(shared, paths.join(scratch, "shared.fbx"), version = version, deflate = deflate)
+            assert(Fbx.load(paths.join(scratch, "shared.fbx")).instance_count() == 8)
     var refused = false
-    Fbx.save(cube, "never.fbx", version = 6100) catch failure:
+    Fbx.save(cube, paths.join(scratch, "never.fbx"), version = 6100) catch failure:
         refused = true
     assert(refused)

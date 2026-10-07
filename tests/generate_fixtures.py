@@ -1,6 +1,7 @@
-"""Original tiny binary FBX fixtures; no external parser or SDK required: a
+"""Regenerate the generated_*.fbx files in tests/fixtures. Original tiny binary FBX fixtures; no external parser or SDK required: a
 triangle Geometry under a Model, in FBX 7.4 and 7.5, arrays raw and zlib, plus
 a corrupt and a truncated copy."""
+from pathlib import Path
 import struct
 import zlib
 
@@ -55,3 +56,7 @@ def write_fixtures(directory):
                 struct.pack_into("<I", corrupted, 27, 0x7fffffff)
                 (directory / "generated_bad_offset.fbx").write_bytes(corrupted)
                 (directory / "generated_truncated.fbx").write_bytes(payload[:40])
+
+
+if __name__ == "__main__":
+    write_fixtures(Path(__file__).resolve().parent / "fixtures")

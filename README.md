@@ -79,9 +79,8 @@ never a trap.
 
 ## Tests
 
-`./test.sh` runs the Base checks (tests/main.lucb, native at opt 0 and 2 and
-through C) under a heap that counts live blocks and fails each allocation in
-turn, then the Luce API tests (tests/api). They cover the fixtures in
+`luc test` runs the Base checks (the test program tests/checks) under a heap that counts live blocks and fails each allocation in
+turn, and the Luce API tests (the test program tests/api). They cover the fixtures in
 tests/fixtures (ufbx's test files under its MIT license, and ours), one cube
 in six encodings, every truncation of a file, a byte-corruption sweep through
 the import, the transform stack against ufbx's matrices, and the conversion

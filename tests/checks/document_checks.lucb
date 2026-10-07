@@ -9,14 +9,14 @@ from luce_geocore.core.growing import Growing
 
 ## The fixtures every check reads.
 let files: str[8] = [
-    "tests/fixtures/blender_279_default_7400_binary.fbx",
-    "tests/fixtures/maya_cube_7400_binary.fbx",
-    "tests/fixtures/maya_cube_big_endian_7400_binary.fbx",
-    "tests/fixtures/maya_zero_end_7400_binary.fbx",
-    "tests/fixtures/maya_cube_6100_binary.fbx",
-    "tests/fixtures/maya_cube_6100_ascii.fbx",
-    "tests/fixtures/maya_cube_7500_ascii.fbx",
-    "tests/fixtures/transforms_7500_ascii.fbx",
+    "../fixtures/blender_279_default_7400_binary.fbx",
+    "../fixtures/maya_cube_7400_binary.fbx",
+    "../fixtures/maya_cube_big_endian_7400_binary.fbx",
+    "../fixtures/maya_zero_end_7400_binary.fbx",
+    "../fixtures/maya_cube_6100_binary.fbx",
+    "../fixtures/maya_cube_6100_ascii.fbx",
+    "../fixtures/maya_cube_7500_ascii.fbx",
+    "../fixtures/transforms_7500_ascii.fbx",
 ]
 
 ## Every fixture parses, and every array in it decodes.
@@ -50,7 +50,7 @@ func decode_everything(document: const Document*) -> usize!:
 ## The cube's vertices in each encoding: FBX 7.4 binary (little- and
 ## big-endian, zero-end records) and FBX 6.1 binary and ASCII.
 pub func equivalent_encodings() -> !:
-    let reference = try cube_vertices("tests/fixtures/maya_cube_7400_binary.fbx")
+    let reference = try cube_vertices("../fixtures/maya_cube_7400_binary.fbx")
     defer free(reference) in memory.heap
     assert(reference.length == 24)
     for path in files[2..<6]:
@@ -71,7 +71,7 @@ func cube_vertices(path: str) -> f64[]!:
 
 ## Every prefix of a binary and an ASCII file parses or fails cleanly.
 pub func truncations() -> !:
-    for path in ["tests/fixtures/maya_cube_7400_binary.fbx", "tests/fixtures/maya_cube_7500_ascii.fbx"]:
+    for path in ["../fixtures/maya_cube_7400_binary.fbx", "../fixtures/maya_cube_7500_ascii.fbx"]:
         let data = try read_file(path)
         defer free(data) in memory.heap
         var parsed: usize = 0

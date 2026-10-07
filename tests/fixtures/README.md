@@ -31,3 +31,6 @@ Ours:
 and uncompressed 7.4/7.5 variants, and corrupt and truncated copies, at test
 time. No ufbx code is
 linked or shipped; the comparison against ufbx runs locally.
+
+Ours: `generated_*.fbx`, a tiny triangle in FBX 7.4 and 7.5 with raw and zlib arrays, plus a
+corrupt and a truncated copy, written by `tests/generate_fixtures.py`.

@@ -27,7 +27,7 @@ let expected: Expected[9] = [
 ]
 
 pub func transforms() -> !:
-    let data = try read_file("tests/fixtures/transforms_7500_ascii.fbx")
+    let data = try read_file("../fixtures/transforms_7500_ascii.fbx")
     defer free(data) in memory.heap
     var document = try Document.parse(data)
     defer document.close()
@@ -60,7 +60,7 @@ func near(value: f64, wanted: f64):
 ## FBX 6: the cube's model, found by name through its connection to the
 ## scene root, with its material connected by name.
 pub func legacy() -> !:
-    for path in ["tests/fixtures/maya_cube_6100_ascii.fbx", "tests/fixtures/maya_cube_6100_binary.fbx"]:
+    for path in ["../fixtures/maya_cube_6100_ascii.fbx", "../fixtures/maya_cube_6100_binary.fbx"]:
         let data = try read_file(path)
         defer free(data) in memory.heap
         var document = try Document.parse(data)

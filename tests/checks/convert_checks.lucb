@@ -54,7 +54,7 @@ func near(value: f64, wanted: f64):
 ## Blender's default cube: 8 points, 6 quads, corner N, its material and
 ## path; the details keep Y-up meters.
 pub func default_cube() -> !:
-    let set = try imported("tests/fixtures/blender_279_default_7400_binary.fbx", ImportOptions())
+    let set = try imported("../fixtures/blender_279_default_7400_binary.fbx", ImportOptions())
     defer dispose_set(set)
     let mesh = try mesh_of(set)
     assert(mesh.point_count() == 8 and mesh.face_count() == 6)
@@ -70,7 +70,7 @@ pub func default_cube() -> !:
 ## Eight Suzannes sharing one mesh: one prototype and eight rows; merged
 ## without instancing; eight rows with Keep hierarchy too.
 pub func instancing() -> !:
-    let path = "tests/fixtures/blender_293_instancing_7400_binary.fbx"
+    let path = "../fixtures/blender_293_instancing_7400_binary.fbx"
     let shared = try imported(path, ImportOptions())
     defer dispose_set(shared)
     let rows = (const Instances*)(shared.find(instances_component()) else error(invalid, "no instances"))
@@ -86,7 +86,7 @@ pub func instancing() -> !:
 
 ## Three color sets as Cd/Alpha, Cd2/Alpha2, Cd3/Alpha3 (ufbx's sums).
 pub func color_sets() -> !:
-    let set = try imported("tests/fixtures/blender_279_color_sets_7400_binary.fbx", ImportOptions())
+    let set = try imported("../fixtures/blender_279_color_sets_7400_binary.fbx", ImportOptions())
     defer dispose_set(set)
     let mesh = try mesh_of(set)
     let first = try attribute_of(mesh, "Cd", Domain.corner)
@@ -99,18 +99,18 @@ pub func color_sets() -> !:
 ## Smoothing, creases and edge visibility become their attributes.
 pub func edge_layers() -> !:
     # Maya's cube: every edge hard (smoothing 0 by edge).
-    let smooth = try imported("tests/fixtures/maya_cube_7500_ascii.fbx", ImportOptions())
+    let smooth = try imported("../fixtures/maya_cube_7500_ascii.fbx", ImportOptions())
     defer dispose_set(smooth)
     let sharp = try attribute_of(try mesh_of(smooth), "sharp", Domain.edge)
     assert(members(sharp) == 12)
-    let creased = try imported("tests/fixtures/blender_293x_subsurf_max_crease_7400_binary.fbx", ImportOptions())
+    let creased = try imported("../fixtures/blender_293x_subsurf_max_crease_7400_binary.fbx", ImportOptions())
     defer dispose_set(creased)
     let plane = try mesh_of(creased)
     let crease = try attribute_of(plane, "crease", Domain.edge)
     var largest: f64 = 0.0
     for edge in 0..<crease.elements: largest = math.max(largest, crease.number(edge, 0))
     near(largest, 10.0)
-    let visible = try imported("tests/fixtures/max_edge_visibility_7500_binary.fbx", ImportOptions())
+    let visible = try imported("../fixtures/max_edge_visibility_7500_binary.fbx", ImportOptions())
     defer dispose_set(visible)
     let hidden = try attribute_of(try mesh_of(visible), "hidden", Domain.edge)
     assert(members(hidden) > 0)
@@ -118,11 +118,11 @@ pub func edge_layers() -> !:
 ## 3ds Max lines are poly curves (7 and 15 points); a rational NURBS curve
 ## keeps its order, knots and weights.
 pub func curves() -> !:
-    let lines = try imported("tests/fixtures/max_curve_line_7500_ascii.fbx", ImportOptions())
+    let lines = try imported("../fixtures/max_curve_line_7500_ascii.fbx", ImportOptions())
     defer dispose_set(lines)
     let poly = (const Curves*)(lines.find(curves_type()) else error(invalid, "no curves"))
     assert(poly.point_count() == 22)
-    let rational = try imported("tests/fixtures/max_nurbs_curve_rational_7500_ascii.fbx", ImportOptions())
+    let rational = try imported("../fixtures/max_nurbs_curve_rational_7500_ascii.fbx", ImportOptions())
     defer dispose_set(rational)
     let nurbs = (const Curves*)(rational.find(curves_type()) else error(invalid, "no curves"))
     assert(nurbs.point_count() == 7 and nurbs.curve_count() == 1)
@@ -135,7 +135,7 @@ pub func curves() -> !:
 
 ## Convert to Y-up meters: a Z-up, centimeter file turns and scales.
 pub func units() -> !:
-    let path = "tests/fixtures/max_edge_visibility_7500_binary.fbx"
+    let path = "../fixtures/max_edge_visibility_7500_binary.fbx"
     let raw = try imported(path, ImportOptions())
     defer dispose_set(raw)
     let converted = try imported(path, ImportOptions(convert_units = true))

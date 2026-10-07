@@ -103,16 +103,16 @@ func mesh_trip(path: str, names: const str[]) -> !:
 ## Blender's cube: points, faces, normals, material and path; the details
 ## keep Y-up meters.
 pub func default_cube() -> !:
-    try mesh_trip("tests/fixtures/blender_279_default_7400_binary.fbx", ["N", "material", "path"])
+    try mesh_trip("../fixtures/blender_279_default_7400_binary.fbx", ["N", "material", "path"])
 
 ## Color sets, smoothing, creases, edge visibility, and a Z-up centimeter
 ## file's settings.
 pub func layers() -> !:
-    try mesh_trip("tests/fixtures/blender_279_color_sets_7400_binary.fbx", ["Cd", "Alpha", "Cd2", "Alpha2", "Cd3", "Alpha3", "path"])
-    try mesh_trip("tests/fixtures/maya_cube_7500_ascii.fbx", ["sharp", "N", "uv"])
-    try mesh_trip("tests/fixtures/blender_293x_subsurf_max_crease_7400_binary.fbx", ["crease"])
-    try mesh_trip("tests/fixtures/max_edge_visibility_7500_binary.fbx", ["hidden"])
-    let (set, data) = try saved("tests/fixtures/max_edge_visibility_7500_binary.fbx", ImportOptions(), ExportOptions())
+    try mesh_trip("../fixtures/blender_279_color_sets_7400_binary.fbx", ["Cd", "Alpha", "Cd2", "Alpha2", "Cd3", "Alpha3", "path"])
+    try mesh_trip("../fixtures/maya_cube_7500_ascii.fbx", ["sharp", "N", "uv"])
+    try mesh_trip("../fixtures/blender_293x_subsurf_max_crease_7400_binary.fbx", ["crease"])
+    try mesh_trip("../fixtures/max_edge_visibility_7500_binary.fbx", ["hidden"])
+    let (set, data) = try saved("../fixtures/max_edge_visibility_7500_binary.fbx", ImportOptions(), ExportOptions())
     defer dispose_set(set)
     defer free(data) in memory.heap
     let again = try read_set(data, ImportOptions())
@@ -126,7 +126,7 @@ pub func layers() -> !:
 
 ## Line and NURBS curves keep their points (and weights).
 pub func curves() -> !:
-    for path in ["tests/fixtures/max_curve_line_7500_ascii.fbx", "tests/fixtures/max_nurbs_curve_rational_7500_ascii.fbx"]:
+    for path in ["../fixtures/max_curve_line_7500_ascii.fbx", "../fixtures/max_nurbs_curve_rational_7500_ascii.fbx"]:
         let (set, data) = try saved(path, ImportOptions(), ExportOptions())
         defer dispose_set(set)
         defer free(data) in memory.heap
@@ -146,7 +146,7 @@ pub func curves() -> !:
 ## Eight rows sharing a Suzanne: one Geometry, eight models, each row's
 ## matrix as it was; merged, the same 4000 faces.
 pub func instances() -> !:
-    let (set, data) = try saved("tests/fixtures/blender_293_instancing_7400_binary.fbx", ImportOptions(), ExportOptions())
+    let (set, data) = try saved("../fixtures/blender_293_instancing_7400_binary.fbx", ImportOptions(), ExportOptions())
     defer dispose_set(set)
     defer free(data) in memory.heap
     let again = try read_set(data, ImportOptions())
@@ -171,7 +171,7 @@ pub func instances() -> !:
 ## may lose its ancestors' names.)
 pub func hierarchy() -> !:
     let options = ImportOptions(keep_hierarchy = true, instancing = false)
-    let (set, data) = try saved("tests/fixtures/blender_279_nested_meshes_7400_binary.fbx", options, ExportOptions())
+    let (set, data) = try saved("../fixtures/blender_279_nested_meshes_7400_binary.fbx", options, ExportOptions())
     defer dispose_set(set)
     defer free(data) in memory.heap
     let again = try read_set(data, options)
@@ -195,7 +195,7 @@ pub func hierarchy() -> !:
 ## 7500 records and raw arrays read as 7400 and deflated ones do.
 pub func encodings() -> !:
     let options = ImportOptions(instancing = false)
-    let (set, wide) = try saved("tests/fixtures/blender_279_color_sets_7400_binary.fbx", options, ExportOptions(version = 7500, deflate = false))
+    let (set, wide) = try saved("../fixtures/blender_279_color_sets_7400_binary.fbx", options, ExportOptions(version = 7500, deflate = false))
     defer dispose_set(set)
     defer free(wide) in memory.heap
     var document = try Document.parse(wide)
