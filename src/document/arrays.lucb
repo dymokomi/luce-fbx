@@ -49,9 +49,10 @@ struct Piece:
     var first: usize
     var count: usize
     var failed: bool
-    ## Why it failed.
+    ## Why it failed: the message is copied into `room`, since the handler that caught it gives the original back when it finishes (base.md §11.3).
     var code: ErrorCode
     var message: str
+    var room: u8[256]
 
 struct Batch:
     var document: const Document*
@@ -208,7 +209,7 @@ func decode_piece(context: void*?, index: usize):
     decode_one(batch, *piece) catch failure:
         piece.failed = true
         piece.code = failure.code
-        piece.message = failure.message
+        piece.message = strings.copy_into(piece.room, failure.message)
 
 ## Decode one piece into its job's output.
 func decode_one(batch: const Batch*, piece: Piece) -> !:
