@@ -115,7 +115,7 @@ func build_mesh(build: MeshBuild*, geometries: const MeshGeometry[], warnings: W
         dropped += chunk.dropped
     if last < build.sources.count: build.sources.items[last].face_end = faces
     if dropped > 0: try warnings.count(dropped, " faces with fewer than 3 corners were dropped")
-    if points > 8388608 or faces > 8388608 or corners > 33554432:
+    if points > max_points or faces > max_faces or corners > max_corners:
         error(errors.limit, "the FBX meshes exceed geocore's 8,388,608 points or faces or 33,554,432 corners")
     build.points = points
     build.faces = faces

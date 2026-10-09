@@ -12,7 +12,7 @@ import budget
 from document import Document, Property, ArrayJob, Element, element_size, scalar_integer
 from scene import Scene, Hierarchy, Kind, Model, Settings, Axis, Animation, Trs, Quat, absent
 from luce_geocore.geocore import Vector3, Matrix4, Mesh
-from luce_geocore.kernel import Float3, Attribute, AttributeStore, Domain, DataType, Role, TableBuilder, GeometrySet, Placement, assembled, put_attribute, mesh_dispose, set_put_detail, empty_set, dispose_set, mesh_component, Instances, new_instances, instances_component, Curves, curves_assembled, curves_type
+from luce_geocore.kernel import Float3, Attribute, AttributeStore, Domain, DataType, Role, TableBuilder, GeometrySet, Placement, assembled, put_attribute, mesh_dispose, set_put_detail, empty_set, dispose_set, mesh_component, Instances, new_instances, instances_component, Curves, curves_assembled, curves_type, max_points, max_faces, max_corners
 from luce_geocore.core.growing import Growing
 from luce_geocore.core.shared import Column
 import strings
