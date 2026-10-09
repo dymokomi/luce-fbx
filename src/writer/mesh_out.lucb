@@ -67,7 +67,7 @@ func prepare_mesh(job: Export*, mesh: const Mesh*) -> !:
     if mesh.face_count() == 0: return
     var parts = Growing[MeshPart]()
     defer close_parts(&parts)
-    let path_at = mesh.find_attribute("path", (i64)(u8)Domain.face)
+    let path_at = mesh.attribute_on("path", Domain.face)
     let paths: const Attribute*? = (try mesh.attribute_entry(path_at)) if path_at >= 0 else none
     try split_parts(mesh, paths, &parts)
     let edges = needs_edges(mesh)
@@ -247,7 +247,7 @@ func place_vertices(context: void*?, first: usize, end: usize):
 func needs_edges(mesh: const Mesh*) -> bool:
     let edge = (i64)(u8)Domain.edge
     if mesh.find_attribute("crease", edge) >= 0 or mesh.find_attribute("hidden", edge) >= 0: return true
-    return mesh.find_attribute("sharp", edge) >= 0 and mesh.find_attribute("smoothing_group", (i64)(u8)Domain.face) < 0
+    return mesh.find_attribute("sharp", edge) >= 0 and mesh.attribute_on("smoothing_group", Domain.face) < 0
 
 func empty_ints32() -> i32[]:
     var none_yet: i32[]

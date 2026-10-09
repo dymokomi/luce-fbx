@@ -43,7 +43,7 @@ func members(attribute: const Attribute*) -> usize:
 ## Detail attribute `name` of `set`.
 func detail(set: const GeometrySet*, name: str) -> const Attribute*!:
     let store = set_detail(set)
-    let index = store.find(name, 3)
+    let index = store.find(name, Domain.detail)
     if index < 0: error(invalid, "a missing detail attribute")
     return store.entry((usize)index)
 
@@ -127,7 +127,7 @@ pub func curves() -> !:
     let nurbs = (const Curves*)(rational.find(curves_type()) else error(invalid, "no curves"))
     assert(nurbs.point_count() == 7 and nurbs.curve_count() == 1)
     let store = nurbs.store()
-    let weights = store.find("w", 0)
+    let weights = store.find("w", Domain.point)
     assert(weights >= 0)
     var weighted_one = true
     for point in 0..<nurbs.point_count(): weighted_one = weighted_one and store.entry((usize)weights).number(point, 0) == 1.0

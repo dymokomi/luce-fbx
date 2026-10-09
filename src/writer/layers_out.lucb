@@ -176,7 +176,7 @@ func color_out(tree: Tree*, layers: LayerList*, mesh: const Mesh*, part: const M
     let count = element_count(elements, entry.domain)
     var alpha: const Attribute*? = none
     var alpha_name: u8[16] = ---
-    let found = mesh.find_attribute(try strings.format(alpha_name, f"Alpha{set + 1}") if set > 0 else "Alpha", (i64)(u8)entry.domain)
+    let found = mesh.attribute_on(try strings.format(alpha_name, f"Alpha{set + 1}") if set > 0 else "Alpha", entry.domain)
     if found >= 0: alpha = try mesh.attribute_entry(found)
     let raw = try new u8[count * 16] --- in memory.heap
     let out = f32[]((f32*)raw.data, count * 4)
@@ -258,7 +258,7 @@ func write_layers(job: Export*, mesh: const Mesh*, part: const MeshPart*, layers
 ## `material` texts in first-use order, "" as "default"), AllSame when one;
 ## none when every face's text is "".
 func write_materials(job: Export*, mesh: const Mesh*, part: const MeshPart*, layers: LayerList*) -> !:
-    let found = mesh.find_attribute("material", (i64)(u8)Domain.face)
+    let found = mesh.attribute_on("material", Domain.face)
     if found < 0: return
     let entry = try mesh.attribute_entry(found)
     if entry.kind != DataType.text: return

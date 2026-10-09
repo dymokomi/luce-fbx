@@ -212,11 +212,11 @@ func scene_settings(set: const GeometrySet*) -> SceneSettings:
         let coord = 3 - up.0 - front.0
         let cyclic = (coord + 1) % 3 == up.0
         settings.coord = (coord, up.1 * front.1 * (1 if cyclic else -1))
-    let meters = detail.find("fbx.metersPerUnit", (i64)(u8)Domain.detail)
+    let meters = detail.find("fbx.metersPerUnit", Domain.detail)
     if meters >= 0:
         let value = detail.entry((usize)meters).number(0, 0)
         if value > 0.0 and math.is_finite(value): settings.meters = value
-    let rate = detail.find("fbx.frameRate", (i64)(u8)Domain.detail)
+    let rate = detail.find("fbx.frameRate", Domain.detail)
     if rate >= 0:
         let value = detail.entry((usize)rate).number(0, 0)
         if value > 0.0 and math.is_finite(value): settings.frame_rate = value
@@ -224,7 +224,7 @@ func scene_settings(set: const GeometrySet*) -> SceneSettings:
 
 ## A "+Y"-style axis detail as (index, sign).
 func axis_detail(detail: const AttributeStore*, name: str) -> (i32, i32)?:
-    let found = detail.find(name, (i64)(u8)Domain.detail)
+    let found = detail.find(name, Domain.detail)
     if found < 0: return none
     let entry = detail.entry((usize)found)
     if entry.kind != DataType.text: return none

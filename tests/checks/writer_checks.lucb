@@ -118,10 +118,10 @@ pub func layers() -> !:
     let again = try read_set(data, ImportOptions())
     defer dispose_set(again)
     for name in ["fbx.upAxis", "fbx.frontAxis"]:
-        let a = set_detail(set).entry((usize)set_detail(set).find(name, 3))
-        let b = set_detail(again).entry((usize)set_detail(again).find(name, 3))
+        let a = set_detail(set).entry((usize)set_detail(set).find(name, Domain.detail))
+        let b = set_detail(again).entry((usize)set_detail(again).find(name, Domain.detail))
         assert(a.text_at(0) == b.text_at(0))
-    let meters = set_detail(again).entry((usize)set_detail(again).find("fbx.metersPerUnit", 3)).number(0, 0)
+    let meters = set_detail(again).entry((usize)set_detail(again).find("fbx.metersPerUnit", Domain.detail)).number(0, 0)
     assert(math.abs(meters - 0.0254) < 1.0e-9)
 
 ## Line and NURBS curves keep their points (and weights).
