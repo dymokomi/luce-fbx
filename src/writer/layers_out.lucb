@@ -37,9 +37,10 @@ func set_of(name: str, base: str) -> i32:
         number = number * 10 + (i32)(byte - '0')
     return number - 1 if number >= 2 and number <= 16 else -1
 
-## A number attribute of at least `width` components.
+## A number attribute of at least `width` components (array attributes are not: FBX
+## layers hold one value per element).
 func numeric(entry: const Attribute*, width: usize) -> bool:
-    return not entry.is_group() and entry.kind != DataType.text and entry.width >= width
+    return not entry.is_group() and not entry.is_ragged() and entry.kind != DataType.text and entry.width >= width
 
 ## Whether a mesh attribute is written (as a layer, a material or the model
 ## structure) or bookkeeping.
@@ -64,7 +65,8 @@ func note_left_out(job: Export*, mesh: const Mesh*) -> !:
         let entry = try mesh.attribute_entry((i64)index)
         if written(entry): continue
         var line: u8[256] = ---
-        try job.warnings.add(try strings.format(line, f"FBX has no layer for the mesh attribute {entry.name()}; it was left out"))
+        if entry.is_ragged(): try job.warnings.add(try strings.format(line, f"FBX has no layer for array attributes; the mesh attribute {entry.name()} was left out"))
+        else: try job.warnings.add(try strings.format(line, f"FBX has no layer for the mesh attribute {entry.name()}; it was left out"))
 
 ## The part's elements of `domain`, in local order.
 func elements_of(part: const MeshPart*, domain: Domain) -> const i32[]:

@@ -39,6 +39,14 @@ pub func fbx_tests(scratch: str) -> unit!:
     let info = Fbx.info("../fixtures/maya_dq_weights_7500_binary.fbx")
     assert(info.contains("frameRate: 24") and info.contains("Deformer: ") and info.contains("animation: "))
     _ = Fbx.warnings()
+    # Array attributes have no FBX layer: left out with a warning.
+    let counts: list[int] = []
+    for at in 0..<mesh.point_count():
+        counts.append(1 if at == 0 else (2 if at == 1 else 0))
+    let listed = mesh.with_array_attribute("nbrs", 0, true, 1, counts, [7.0, 8.0, 9.0])
+    Fbx.save(GeometrySet.of_mesh(listed), paths.join(scratch, "arrays.fbx"))
+    assert(Fbx.warnings().contains("FBX has no layer for array attributes; the mesh attribute nbrs was left out"))
+    assert((Fbx.load(paths.join(scratch, "arrays.fbx")).mesh() else error(invalid, "no mesh")).face_count() == 6)
     save_tests(scratch)
     print("PASS Fbx.load, info and save: binary and ASCII scenes, instancing, units, animation and skins at a time, damaged files, saves read back")
 
