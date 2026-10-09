@@ -37,8 +37,8 @@ struct PackWork:
 ## Deflate blob `index` (zlib level 1) when it is large enough;
 ## compress.compress takes a large one in 1 MiB segments on several threads,
 ## which compress.inflate reads back the same way.
-func pack_blob(context: void*?, index: usize):
-    let work = (PackWork*)(context else return)
+func pack_blob(context: void*, index: usize, worker: usize):
+    let work = (PackWork*)context
     let blob = &work.blobs[index]
     if blob.raw.length <= pack_above: return
     blob.packed = compress.compress(blob.raw, 1) catch failure:
@@ -50,7 +50,7 @@ func pack_blob(context: void*?, index: usize):
 ## Deflate every array over `pack_above` bytes, one pool task each.
 func pack_blobs(tree: Tree*) -> !:
     var work = PackWork(blobs = tree.blobs.items[..<tree.blobs.count])
-    pool.run(tree.blobs.count, pack_blob, (void*)&work)
+    try parallel.for_each(tree.blobs.count, (void*)&work, pack_blob)
     for blob in tree.blobs.view():
         if blob.failed: error(memory.exhausted, "out of memory deflating an FBX array")
 
@@ -77,7 +77,7 @@ func encode_tree(tree: Tree*, requested: u32, deflate: bool, version_prop: usize
     for root in tree.roots.view(): try write_node(tree, sizes, root, &out)
     # The arrays' bytes, copied in parallel into the places left for them.
     var copying = CopyWork(tree = tree, data = data, copies = out.copies.view())
-    pool.run(out.copies.count, copy_array, (void*)&copying)
+    try parallel.for_each(out.copies.count, (void*)&copying, copy_array)
     out.zeros(header_bytes(out.wide))
     for byte in foot_id: out.put8(byte)
     out.zeros(4)
@@ -233,8 +233,8 @@ struct CopyWork:
     var data: u8[]
     var copies: const Copy[]
 
-func copy_array(context: void*?, index: usize):
-    let work = (CopyWork*)(context else return)
+func copy_array(context: void*, index: usize, worker: usize):
+    let work = (CopyWork*)context
     let piece = work.copies[index]
     let blob = &work.tree.blobs.items[piece.blob]
     let bytes = blob.packed if blob.packed_length > 0 else blob.raw

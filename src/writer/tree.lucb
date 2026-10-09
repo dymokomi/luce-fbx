@@ -4,9 +4,8 @@
 ## the builder may rearrange (Definitions, counted last, goes before
 ## Objects). Arrays are blobs of raw little-endian values the encoder
 ## deflates in parallel. Every other fragment of the writer builds on this.
-from luce_std import math
+from luce_std import math, parallel
 import memory
-from luce_geocore.core import parallel as pool
 from luce_compress import compress
 import errors
 import source

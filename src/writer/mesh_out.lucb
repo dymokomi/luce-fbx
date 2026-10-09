@@ -197,7 +197,7 @@ func write_geometry(job: Export*, mesh: const Mesh*, part: const MeshPart*, id: 
     let points = part.points.count
     let vertices = try new u8[points * 24] --- in memory.heap
     var placing = VertexWork(positions = positions, points = part.points.view(), origin = origin, out = f64[]((f64*)vertices.data, points * 3))
-    pool.parallel_for(points, 65536, place_vertices, (void*)&placing)
+    try parallel.for_each_range(points, 65536, (void*)&placing, place_vertices)
     try tree.begin("Vertices")
     try tree.array('d', points * 3, vertices)
     tree.end()
@@ -232,8 +232,8 @@ struct VertexWork:
     var origin: Vector3
     var out: f64[]
 
-func place_vertices(context: void*?, first: usize, end: usize):
-    let work = (VertexWork*)(context else return)
+func place_vertices(context: void*, first: usize, end: usize, worker: usize):
+    let work = (VertexWork*)context
     let origin = work.origin
     for at in first..<end:
         let p = work.positions[(usize)work.points[at]]

@@ -96,7 +96,7 @@ func build_mesh(build: MeshBuild*, geometries: const MeshGeometry[], warnings: W
             first = end
     var unset: i32[]
     var work = FaceWork(geometries, build.sources.items[..<build.sources.count], chunks.items[..<chunks.count], unset, unset, unset, unset)
-    pool.run(chunks.count, count_chunk, (void*)&work)
+    try parallel.for_each(chunks.count, (void*)&work, count_chunk)
     var faces: usize = 0
     var corners: usize = 0
     var dropped: usize = 0
@@ -128,13 +128,13 @@ func build_mesh(build: MeshBuild*, geometries: const MeshGeometry[], warnings: W
     work.corners = build.corners.span()
     work.face_source = build.face_source.span()
     work.corner_source = build.corner_source.span()
-    pool.run(chunks.count, write_chunk, (void*)&work)
+    try parallel.for_each(chunks.count, (void*)&work, write_chunk)
     work.offsets[faces] = (i32)corners
     try place_points(build, geometries)
 
 ## What a chunk keeps.
-func count_chunk(context: void*?, index: usize):
-    let work = (FaceWork*)(context else return)
+func count_chunk(context: void*, index: usize, worker: usize):
+    let work = (FaceWork*)context
     let chunk = &work.chunks[index]
     let geometry = &work.geometries[work.sources[chunk.source].geometry]
     let starts = geometry.faces.view()
@@ -147,8 +147,8 @@ func count_chunk(context: void*?, index: usize):
             chunk.kept_corners += size
 
 ## Write a chunk's kept faces.
-func write_chunk(context: void*?, index: usize):
-    let work = (FaceWork*)(context else return)
+func write_chunk(context: void*, index: usize, worker: usize):
+    let work = (FaceWork*)context
     let chunk = &work.chunks[index]
     let source = &work.sources[chunk.source]
     let geometry = &work.geometries[source.geometry]

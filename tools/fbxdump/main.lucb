@@ -11,9 +11,8 @@
 ## writer, at 7400 or 7500, its arrays deflated or (--raw) not.
 import c
 import memory
-from luce_geocore.core import parallel as pool
 from luce_fbx.kernel import Document, Scene, Hierarchy, Kind, Animation, ImportOptions, Warnings, import_document, read_file, write_file, ExportOptions, encode_set
-from luce_std import math
+from luce_std import math, parallel
 import strings
 from luce_geocore.geocore import Matrix4, Vector3, Mesh
 from luce_geocore.kernel import GeometrySet, Attribute, Domain, DataType, Float3, Curves, set_mesh, curves_type, dispose_set
@@ -23,7 +22,7 @@ pub func main(arguments: str[]) -> i32!:
     if arguments.length < 2:
         print("usage: fbxdump FILE")
         return 2
-    pool.warm()
+    parallel.warm()
     let data = try read_file(arguments[1])
     defer free(data) in memory.heap
     var document = Document.parse(data) catch failure:

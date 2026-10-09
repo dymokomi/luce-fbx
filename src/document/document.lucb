@@ -10,9 +10,8 @@
 ## its children. The document borrows the file's bytes: names, strings and
 ## arrays point into them, so the bytes must outlive the document.
 import memory
-from luce_std import math
+from luce_std import math, parallel
 import strings
-from luce_geocore.core import parallel as pool
 import errors
 import budget
 from luce_compress import compress

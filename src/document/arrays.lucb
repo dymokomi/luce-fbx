@@ -101,9 +101,9 @@ extend Document:
             if let found = self.array_property(jobs[piece.job].node):
                 if found.kind == 'a': counting = true
         if counting:
-            pool.run(batch.pieces.length, count_piece, (void*)&batch)
+            try parallel.for_each(batch.pieces.length, (void*)&batch, count_piece)
             try self.place_text_pieces(&batch)
-        pool.run(batch.pieces.length, decode_piece, (void*)&batch)
+        try parallel.for_each(batch.pieces.length, (void*)&batch, decode_piece)
         for piece in batch.pieces:
             if piece.failed: error(piece.code, piece.message)
 
@@ -168,8 +168,8 @@ extend Document:
 func is_numeric_scalar(kind: u8) -> bool:
     return kind == 'C' or kind == 'Y' or kind == 'I' or kind == 'L' or kind == 'F' or kind == 'D' or kind == 'N'
 
-func count_piece(context: void*?, index: usize):
-    let batch = (Batch*)(context else return)
+func count_piece(context: void*, index: usize, worker: usize):
+    let batch = (Batch*)context
     let piece = &batch.pieces[index]
     let found = batch.document.array_property(batch.jobs[piece.job].node) else return
     if found.kind != 'a': return
@@ -203,8 +203,8 @@ func count_numbers(text: const u8[]) -> usize?:
 func is_number_byte(byte: u8) -> bool:
     return (byte >= '0' and byte <= '9') or byte == '-' or byte == '+' or byte == '.' or byte == '#' or byte == '(' or byte == ')' or byte == '_' or (byte >= 'A' and byte <= 'Z') or (byte >= 'a' and byte <= 'z')
 
-func decode_piece(context: void*?, index: usize):
-    let batch = (Batch*)(context else return)
+func decode_piece(context: void*, index: usize, worker: usize):
+    let batch = (Batch*)context
     let piece = &batch.pieces[index]
     decode_one(batch, *piece) catch failure:
         piece.failed = true

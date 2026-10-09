@@ -38,7 +38,7 @@ func place_points(build: MeshBuild*, geometries: const MeshGeometry[]) -> !:
     defer boxes.release()
     build.positions = try Column[Float3].allocate(build.points)
     var work = PointWork(geometries, build.sources.items[..<build.sources.count], chunks.items[..<chunks.count], boxes.span(), build.positions.span(), Vector3())
-    pool.run(chunks.count, bound_chunk, (void*)&work)
+    try parallel.for_each(chunks.count, (void*)&work, bound_chunk)
     var low = Vector3(math.infinity, math.infinity, math.infinity)
     var high = Vector3(-math.infinity, -math.infinity, -math.infinity)
     for box in boxes.view():
@@ -46,11 +46,11 @@ func place_points(build: MeshBuild*, geometries: const MeshGeometry[]) -> !:
         high = Vector3(math.max(high.x, box.high.x), math.max(high.y, box.high.y), math.max(high.z, box.high.z))
     build.origin = origin_for(low, high)
     work.origin = build.origin
-    pool.run(chunks.count, place_chunk, (void*)&work)
+    try parallel.for_each(chunks.count, (void*)&work, place_chunk)
 
 ## A chunk's placed bounds.
-func bound_chunk(context: void*?, index: usize):
-    let work = (PointWork*)(context else return)
+func bound_chunk(context: void*, index: usize, worker: usize):
+    let work = (PointWork*)context
     let chunk = work.chunks[index]
     let source = &work.sources[chunk.source]
     let vertices = work.geometries[source.geometry].vertices
@@ -72,8 +72,8 @@ func origin_for(low: Vector3, high: Vector3) -> Vector3:
     if reach > 4096.0 or reach > span * 8.0: return Vector3((low.x + high.x) * 0.5, (low.y + high.y) * 0.5, (low.z + high.z) * 0.5)
     return Vector3()
 
-func place_chunk(context: void*?, index: usize):
-    let work = (PointWork*)(context else return)
+func place_chunk(context: void*, index: usize, worker: usize):
+    let work = (PointWork*)context
     let chunk = work.chunks[index]
     let source = &work.sources[chunk.source]
     let vertices = work.geometries[source.geometry].vertices

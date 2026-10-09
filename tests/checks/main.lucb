@@ -6,7 +6,7 @@ import c
 import os
 import memory
 import sync
-from luce_geocore.core import parallel as geocore_parallel
+from luce_std import parallel
 import document_checks
 import scene_checks
 import convert_checks
@@ -72,7 +72,7 @@ pub func main(arguments: str[]) -> i32!:
     if let here = os.env("LUC_TEST_DIR"):
         try os.change_dir((c.str)here)
     # Start the pool first: its starting threads free blocks in the current heap.
-    geocore_parallel.warm()
+    parallel.warm()
     let previous = memory.heap
     var tracker = Tracker(previous, 0, none, sync.Mutex())
     memory.heap = &tracker

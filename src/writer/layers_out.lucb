@@ -119,11 +119,11 @@ func gathered(entry: const Attribute*, elements: const i32[], width: usize, scal
     let direct = entry.width >= width and entry.domain != Domain.detail
     if direct and entry.kind == DataType.float32 and entry.data.view().length >= entry.elements * entry.width * 4:
         var work = GatherWork(elements = elements, stride = entry.width, width = width, scale = scale, doubles = no_doubles(), singles = f32[]((f32*)entry.data.view().data, entry.elements * entry.width), out = out)
-        pool.parallel_for(count, 65536, gather_chunk, (void*)&work)
+        try parallel.for_each_range(count, 65536, (void*)&work, gather_chunk)
         return raw
     if direct and entry.kind == DataType.float64 and entry.data.view().length >= entry.elements * entry.width * 8:
         var work = GatherWork(elements = elements, stride = entry.width, width = width, scale = scale, doubles = f64[]((f64*)entry.data.view().data, entry.elements * entry.width), singles = no_singles(), out = out)
-        pool.parallel_for(count, 65536, gather_chunk, (void*)&work)
+        try parallel.for_each_range(count, 65536, (void*)&work, gather_chunk)
         return raw
     for at in 0..<count:
         let element = element_at(elements, entry.domain, at)
@@ -141,8 +141,8 @@ struct GatherWork:
     var singles: const f32[]
     var out: f32[]
 
-func gather_chunk(context: void*?, first: usize, end: usize):
-    let work = (GatherWork*)(context else return)
+func gather_chunk(context: void*, first: usize, end: usize, worker: usize):
+    let work = (GatherWork*)context
     let width = work.width
     let stride = work.stride
     if work.doubles.length > 0:

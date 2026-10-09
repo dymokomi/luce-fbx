@@ -47,7 +47,7 @@ func put_numbers(mesh: Mesh*, build: const MeshBuild*, geometries: const MeshGeo
         var turn: u8 = 0
         if geometry.world_space and directional(plan.kind): turn = 1 if plan.kind == LayerKind.normal else 2
         var work = FillWork(geometry, build, &source, layer, plan.domain, out, first, components, scale, no_integers, no_bits, false, 0, turn)
-        run_fill(&work)
+        try run_fill(&work)
     try put_attribute(mesh, attribute)
 
 ## An int32 attribute of one component from the layers of a planned kind.
@@ -62,7 +62,7 @@ func put_integers(mesh: Mesh*, build: const MeshBuild*, geometries: const MeshGe
         let geometry = &geometries[source.geometry]
         let layer = layer_for(geometry, plan) else continue
         var work = FillWork(geometry, build, &source, layer, plan.domain, no_floats, 0, 1, 1.0, out, no_bits, false, 0, 0)
-        run_fill(&work)
+        try run_fill(&work)
     try put_attribute(mesh, attribute)
 
 ## A face group of the faces whose layer value is nonzero.
@@ -76,7 +76,7 @@ func put_face_group(mesh: Mesh*, build: const MeshBuild*, geometries: const Mesh
         let geometry = &geometries[source.geometry]
         let layer = layer_for(geometry, plan) else continue
         var work = FillWork(geometry, build, &source, layer, Domain.face, no_floats, 0, 1, 1.0, no_integers, bits, false, 0, 0)
-        run_fill(&work)
+        try run_fill(&work)
     try put_attribute(mesh, attribute)
 
 func element_count(build: const MeshBuild*, domain: Domain) -> usize:
@@ -86,21 +86,21 @@ func element_count(build: const MeshBuild*, domain: Domain) -> usize:
         _: return build.faces
 
 ## Fill `work`'s source into its output, in parallel chunks.
-func run_fill(work: FillWork*):
+func run_fill(work: FillWork*) -> !:
     if work.domain == Domain.point:
         let count = work.geometry.point_count()
-        pool.run((count + fill_grain - 1) // fill_grain, fill_points, (void*)work)
+        try parallel.for_each((count + fill_grain - 1) // fill_grain, (void*)work, fill_points)
         return
     let faces = work.source.face_end - work.source.face_base
     let chunks = (faces + fill_grain - 1) // fill_grain
     if work.bits.length > 0:
         # Neighbouring chunks may share a word of bits: one thread.
-        for index in 0..<chunks: fill_faces((void*)work, index)
+        for index in 0..<chunks: fill_faces((void*)work, index, 0)
         return
-    pool.run(chunks, fill_faces, (void*)work)
+    try parallel.for_each(chunks, (void*)work, fill_faces)
 
-func fill_points(context: void*?, index: usize):
-    let work = (FillWork*)(context else return)
+func fill_points(context: void*, index: usize, worker: usize):
+    let work = (FillWork*)context
     let count = work.geometry.point_count()
     let first = index * fill_grain
     let end = first + fill_grain if count - first > fill_grain else count
@@ -109,8 +109,8 @@ func fill_points(context: void*?, index: usize):
 
 ## Chunk `index` of the source's merged faces: each face's value, or each
 ## of its corners'.
-func fill_faces(context: void*?, index: usize):
-    let work = (FillWork*)(context else return)
+func fill_faces(context: void*, index: usize, worker: usize):
+    let work = (FillWork*)context
     let source = work.source
     let face_source = work.build.face_source.view()
     let offsets = work.build.offsets.view()

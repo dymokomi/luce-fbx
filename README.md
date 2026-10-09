@@ -63,7 +63,7 @@ their rest values with a warning (docs/MAPPING.md, "What is left out").
 - `document/`: one flat node table for both encodings; arrays are recorded, not
   decoded, and every array an import needs decodes in one parallel batch
   (zlib per array, raw arrays in slices, ASCII in counted pieces) on
-  luce-geocore's pool.
+  luce-std's pool.
 - `scene/`: objects, connections, templates, settings, the hierarchy and its
   transforms.
 - `convert/`: the GeometrySet: meshes merged in parallel passes, layers as

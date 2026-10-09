@@ -168,7 +168,7 @@ func skin(hierarchy: const Hierarchy*, geometry: MeshGeometry*, model: u32) -> !
         if point >= 0 and (usize)point < points: dq.items[(usize)point] = deformation.dq_weights[at]
     try deformation.linear.fill(points * 9, 0.0)
     var work = SkinWork(geometry.vertices, deformation.linear.items[..<points * 9], starts.view(), influences.view(), deformation.clusters.view(), rigid.view(), dq.view(), entry.geometry_world)
-    pool.parallel_for(points, grain, skin_points, (void*)&work)
+    try parallel.for_each_range(points, grain, (void*)&work, skin_points)
 
 func sort_influences(items: Influence[]):
     for at in 1..<items.length:
@@ -179,8 +179,8 @@ func sort_influences(items: Influence[]):
             slot -= 1
         items[slot] = item
 
-func skin_points(context: void*?, first: usize, end: usize):
-    let work = (SkinWork*)(context else return)
+func skin_points(context: void*, first: usize, end: usize, worker: usize):
+    let work = (SkinWork*)context
     for point in first..<end:
         let m = skin_matrix(work, point)
         let columns: Vector3[3] = [m.x, m.y, m.z]

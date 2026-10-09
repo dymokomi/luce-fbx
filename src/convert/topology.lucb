@@ -29,7 +29,7 @@ func find_faces(geometries: MeshGeometry[]) -> !:
             try chunks.push(IndexChunk(geometry = index, first = first, end = end, ends = 0, face_base = 0, bad = false))
             first = end
     var work = TopologyWork(geometries, chunks.items[..<chunks.count])
-    pool.run(chunks.count, count_ends, (void*)&work)
+    try parallel.for_each(chunks.count, (void*)&work, count_ends)
     var at: usize = 0
     while at < chunks.count:
         let index = chunks.items[at].geometry
@@ -46,11 +46,11 @@ func find_faces(geometries: MeshGeometry[]) -> !:
         geometry.broken = bad
         try geometry.faces.fill(faces + 1, 0)
         geometry.faces.items[faces] = (i32)geometry.indices.length
-    pool.run(chunks.count, write_starts, (void*)&work)
+    try parallel.for_each(chunks.count, (void*)&work, write_starts)
 
 ## A chunk's face ends, and whether each index names a point.
-func count_ends(context: void*?, index: usize):
-    let work = (TopologyWork*)(context else return)
+func count_ends(context: void*, index: usize, worker: usize):
+    let work = (TopologyWork*)context
     let chunk = &work.chunks[index]
     let geometry = &work.geometries[chunk.geometry]
     let points = (i64)geometry.point_count()
@@ -63,8 +63,8 @@ func count_ends(context: void*?, index: usize):
     chunk.ends = ends
 
 ## Each face's first polygon vertex: the one after the previous face's end.
-func write_starts(context: void*?, index: usize):
-    let work = (TopologyWork*)(context else return)
+func write_starts(context: void*, index: usize, worker: usize):
+    let work = (TopologyWork*)context
     let chunk = &work.chunks[index]
     let geometry = &work.geometries[chunk.geometry]
     let starts = geometry.faces.items
